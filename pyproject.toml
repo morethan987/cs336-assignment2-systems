@@ -15,8 +15,6 @@ dependencies = [
     "tqdm>=4.67.1",
     "wandb>=0.19.7",
     "pandas>=2",
-    "ty>=0.0.29",
-    "ruff>=0.15.10",
 ]
 
 [build-system]
@@ -27,12 +25,22 @@ build-backend = "uv_build"
 module-name = "cs336_systems"
 module-root = ""
 
+[[tool.uv.index]]
+url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
+default = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
 [tool.uv]
 package = true
 python-preference = "managed"
 
 [tool.uv.sources]
-cs336-basics = { path = "./cs336-basics", editable = true } # Change this path to your assignment1-basics repo you want to use your own implementation!
+cs336-basics = { path = "../cs336-assignment1-basics", editable = true } # Change this path to your assignment1-basics repo you want to use your own implementation!
+torch = { index = "pytorch-cu128" }
 
 
 
