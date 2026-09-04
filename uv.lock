@@ -193,7 +193,7 @@ requires-dist = [
     { name = "humanfriendly" },
     { name = "matplotlib" },
     { name = "numpy" },
-    { name = "pandas", specifier = ">=2" },
+    { name = "pandas", specifier = ">=3" },
     { name = "pytest", specifier = ">=8" },
     { name = "regex", specifier = ">=2026.3.32" },
     { name = "torch", specifier = "~=2.11.0", index = "https://download.pytorch.org/whl/cu128" },
