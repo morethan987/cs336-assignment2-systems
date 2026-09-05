@@ -39,18 +39,35 @@
 
   *Deliverable:* A script that will initialize a `basics` Transformer model with the given hyperparameters, create a random batch of data, and time forward-only, forward-and-backward, and full training steps that include the optimizer step.
 
-  #response(title: "Solution / Code")[
-    ```python
-    # TODO: Place your benchmarking script or reference here
-    ```
-  ]
+  #response[See `benchmark_script.py`]
 
 + Time the forward, backward, and optimizer step for the model sizes described in Section 2.1.2. Use 5 warmup steps and compute the average and standard deviation of timings over 10 measurement steps. How long does a forward pass take? How about a backward pass? Do you see high variability across measurements, or is the standard deviation small?
 
   *Deliverable:* A 1-2 sentence response with your timings.
 
   #response[
-    // TODO: A 1-2 sentence response with your timings.
+    I measured the timing with 50 steps and 5 warm-up steps. A forward pass takes 20.65 ms with 2.66 ms standard deviation (relatively 12.88%), a backward pass takes 23.67 ms with 3.35 ms standard deviation (relatively 14.14%).
+    #figure(
+      caption: "Basic benchmarking results",
+      table(
+        columns: (auto, auto, auto),
+        inset: (x: 8pt, y: 4.5pt),
+        align: (left, center, center),
+        stroke: none,
+
+        table.hline(stroke: 1.2pt),
+        [Stage], [Mean (ms)], [Std (ms)],
+        table.hline(stroke: 0.6pt),
+
+        [Prepare], [0.0902], [0.0259],
+        [Forward], [20.6506], [2.6613],
+        [Backward], [23.6743], [3.3483],
+        [Optimizer], [2.8455], [0.3755],
+        table.hline(stroke: 0.4pt),
+        [Total], [47.2606], [6.1087],
+        table.hline(stroke: 1.2pt),
+      ),
+    )
   ]
 
 + One caveat of benchmarking is not performing the warm-up steps. Repeat your analysis without the warm-up steps. How does this affect your results? Why do you think this happens? Also try to run the script with 1 or 2 warm-up steps. Why might the result still be different?
@@ -58,5 +75,42 @@
   *Deliverable:* A 2-3 sentence response.
 
   #response[
-    // TODO: A 1-2 sentence response with your timings.
+    Without warm-up steps, the mean latency at each stage increases markedly, and the total standard deviation is over 16 times higher than that with warm-up. This discrepancy is primarily attributed to the cold-start overheads of the GPU runtime and deep learning framework—such as CUDA context initialization, PyTorch memory caching allocator initialization (avoiding repeated `cudaMalloc`). Incorporating just 1 or 2 warm-up steps effectively eliminates these initialization artifacts, resulting in stable performance with significantly reduced standard deviation.
+
+    *Note: The latency is not driven by GPU hardware cache which is limited to tens of megabytes. It is completely flushed during a single forward and backward pass.*
+
+    #figure(
+      table(
+        columns: (auto, auto, auto, auto, auto, auto, auto),
+        inset: (x: 8pt, y: 4.5pt),
+        align: (left, right, right, right, right, right, right),
+        stroke: none,
+
+        // top line
+        table.hline(stroke: 1.2pt),
+        table.header(
+          table.cell(rowspan: 2, align: horizon + left)[*Stage*],
+          table.cell(colspan: 2, align: center)[*0 warm-up (ms)*],
+          table.cell(colspan: 2, align: center)[*1 warm-up (ms)*],
+          table.cell(colspan: 2, align: center)[*2 warm-up (ms)*],
+          table.hline(start: 1, end: 7, stroke: 0.5pt),
+          [Mean], [Std], [Mean], [Std], [Mean], [Std],
+        ),
+
+        // header split
+        table.hline(stroke: 0.6pt),
+
+        [Prepare], [0.1695], [0.5768], [0.0843], [0.0169], [0.0845], [0.0176],
+        [Forward], [38.2242], [127.3257], [19.8813], [4.0689], [19.9290], [3.6766],
+        [Backward], [25.3251], [18.9235], [22.5781], [4.5535], [22.8588], [4.6035],
+        [Optimizer], [3.0423], [2.1910], [2.7499], [0.5143], [2.8101], [0.4890],
+
+        table.hline(stroke: 0.4pt),
+        [Total], [66.7611], [148.5845], [45.2936], [8.9231], [45.6824], [8.5872],
+
+        // bottom
+        table.hline(stroke: 1.2pt),
+      ),
+      caption: [Warm-up ablation],
+    )
   ]
