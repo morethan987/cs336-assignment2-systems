@@ -23,10 +23,10 @@ class BenchConfig:
     name: str
     steps: int
     warm_up: int
+    unit_ms: bool
     batch_size: int
     lr: float
     min_lr: float
-    lr_warmup_steps: int
     weight_decay: float
     eps: float
     grad_clip: float
@@ -37,8 +37,6 @@ class BenchConfig:
     def validate(self):
         if self.min_lr > self.lr:
             raise ValueError(f"min_lr ({self.min_lr}) > lr ({self.lr})")
-        if self.lr_warmup_steps >= self.steps:
-            raise ValueError(f"lr_warmup_steps ({self.lr_warmup_steps}) >= max_steps ({self.steps})")
         if self.warm_up >= self.steps:
             raise ValueError(f"warm_up ({self.warm_up}) >= max_steps ({self.steps})")
 
@@ -114,7 +112,7 @@ class BenchMarker:
             t=step,
             alpha_max=self.bench_cfg.lr,
             alpha_min=self.bench_cfg.min_lr,
-            t_w=self.bench_cfg.lr_warmup_steps,
+            t_w=self.bench_cfg.warm_up,
             t_c=self.bench_cfg.steps,
         )
 
@@ -169,8 +167,8 @@ class BenchMarker:
         self.res = np.array(records)  # (step, stages)
 
         self.save_res()
-        self.show_res()
-        self.export()
+        self.show_res(unit_ms=self.bench_cfg.unit_ms)
+        self.export(unit_ms=self.bench_cfg.unit_ms)
 
     def save_res(self) -> None:
         path = self.res_dir / "raw_timings.npy"
@@ -262,10 +260,10 @@ def parse_args() -> tuple[ModelConfig, BenchConfig]:
     bench_group.add_argument("--name", type=str, default="bench")
     bench_group.add_argument("--steps", type=int, required=True)
     bench_group.add_argument("--warm_up", type=int, required=True)
+    bench_group.add_argument("--no_unit_ms", dest="unit_ms", action="store_false", default=True)
     bench_group.add_argument("--batch_size", type=int, default=4)
     bench_group.add_argument("--lr", type=float, default=1.5e-3)
     bench_group.add_argument("--min_lr", type=float, default=1.5e-4)
-    bench_group.add_argument("--lr_warmup_steps", type=int, default=500)
     bench_group.add_argument("--weight_decay", type=float, default=0.1)
     bench_group.add_argument("--eps", type=float, default=1e-8)
     bench_group.add_argument("--betas", type=float, default=(0.9, 0.95), nargs=2)
@@ -291,10 +289,10 @@ def parse_args() -> tuple[ModelConfig, BenchConfig]:
         name=args.name,
         steps=args.steps,
         warm_up=args.warm_up,
+        unit_ms=args.unit_ms,
         batch_size=args.batch_size,
         lr=args.lr,
         min_lr=args.min_lr,
-        lr_warmup_steps=args.lr_warmup_steps,
         weight_decay=args.weight_decay,
         eps=args.eps,
         betas=tuple(args.betas),
