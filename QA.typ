@@ -29,6 +29,31 @@
 
 = Profiling and Benchmarking
 
+== Preliminary
+
+#figure(
+  caption: "Specifications of different model sizes.",
+  table(
+    columns: (auto, auto, auto, auto, auto),
+    inset: (x: 8pt, y: 4.5pt),
+    align: (left, center, center, center, center),
+    stroke: none,
+
+    table.hline(stroke: 1.2pt),
+    [Size], [`d_model`], [`d_ff`], [`num_layers`], [`num_heads`],
+    table.hline(stroke: 0.6pt),
+
+    [small], [768], [3072], [12], [12],
+    [medium], [1024], [4096], [24], [16],
+    [large], [1280], [5120], [36], [20],
+    [xl], [2560], [10240], [32], [32],
+    [10B], [4608], [12288], [50], [36],
+    table.hline(stroke: 1.2pt),
+  ),
+)
+
+Context length is 512 unless otherwise specified.
+
 == Benchmarking Script
 
 + Write a script to perform basic end-to-end benchmarking of the forward pass, backward pass, and optimizer step in your model. Specifically, your script should support the following:
@@ -114,3 +139,37 @@
       caption: [Warm-up ablation],
     )
   ]
+
+== Nsight Systems Profiling
+
+Profile your forward pass, backward pass, and optimizer step using nsys with two model sizes from Table 1 of your choice as well as three power-of-two context lengths larger than 128, where the largest available size should be the longest context length you can fit in memory. Pick the combinations you think would be the most interesting to look at. For each profile answer the following questions:
+
++ What is the total time spent on your forward pass? Does it match what we had measured before with the Python standard library?
+
+  *Deliverable*: A 1-2 sentence response.
+
+  #response[]
+
++ What CUDA kernel takes the most cumulative GPU time during the forward pass? How many times is this kernel invoked during a single forward pass of your model? Is it the same kernel that takes the most runtime when you do both forward and backward passes? (Hint: look at the “CUDA GPU Kernel Summary” under “Stats System View”, and filter using NVTX ranges to identify which parts of the model are responsible for which kernels.)
+
+  *Deliverable*: A 1-2 sentence response.
+
+  #response[]
+
++ Although the vast majority of FLOPs take place in matrix multiplications, you will notice that several other kernels still take a non-trivial amount of the overall runtime. What other kernels besides matrix multiplies do you see accounting for non-trivial CUDA runtime in the forward pass?
+
+  *Deliverable*: A 1-2 sentence response.
+
+  #response[]
+
++ Profile running one complete training step with your implementation of AdamW (i.e., the forward pass, computing the loss and running a backward pass, and finally an optimizer step, as you’d do during training). How does the fraction of time spent on matrix multiplication change, compared to doing inference (forward pass only)? How about other kernels?
+
+  *Deliverable*: A 1-2 sentence response.
+
+  #response[]
+
++ Compare the runtime of the softmax operation versus the matrix multiplication operations within the self-attention layer of your model during a forward pass. How does the difference in runtimes compare to the difference in FLOPs?
+
+  *Deliverable*: A 1-2 sentence response.
+
+  #response[]
