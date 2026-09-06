@@ -34,11 +34,10 @@ OUT_DIR="profiles/$(date +'%Y%m%d_%H%M%S')" && mkdir -p "$OUT_DIR" && uv run nsy
   --pytorch=functions-trace,autograd-shapes-nvtx \
   --cudabacktrace=all \
   --python-backtrace=cuda \
-  --gpu-metrics-devices=0 \
   --cuda-memory-usage=true \
   --stats=true \
   --force-overwrite=true \
-  -- python cs336_systems/nsys_profile.py --warm_up 5 --steps 3
+  -- python cs336_systems/nsys_profile.py --warm_up 5 --steps 5
 
 # no ui
 OUT_DIR="profiles/$(date +'%Y%m%d_%H%M%S')" && mkdir -p "$OUT_DIR" && uv run nsys profile \
@@ -46,12 +45,10 @@ OUT_DIR="profiles/$(date +'%Y%m%d_%H%M%S')" && mkdir -p "$OUT_DIR" && uv run nsy
   --capture-range=cudaProfilerApi \
   --capture-range-end=stop \
   --trace=cuda,cudnn,cublas,nvtx \
-  --gpu-metrics-devices=0 \
   --cuda-memory-usage=true \
-  --export=csv \
   --stats=true \
   --force-overwrite=true \
-  -- python cs336_systems/nsys_profile.py --warm_up 5 --steps 3
+  -- python cs336_systems/nsys_profile.py --warm_up 5 --steps 5
 ```
 
 Expects:
