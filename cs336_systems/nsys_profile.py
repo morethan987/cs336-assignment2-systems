@@ -99,7 +99,7 @@ class NsysBenchMarker:
         tks = torch.randint(
             0,
             self.model_cfg.vocab_size,
-            (self.bench_cfg.batch_size, self.model_cfg.context_length),
+            (self.bench_cfg.batch_size, self.model_cfg.context_length + 1),
             device=self.model_cfg.device,
             dtype=torch.int,
         )

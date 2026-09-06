@@ -26,6 +26,7 @@ class BenchConfig:
     unit_ms: bool
     batch_size: int
     lr: float
+    lr_warm_up: int
     min_lr: float
     weight_decay: float
     eps: float
@@ -101,7 +102,7 @@ class BenchMarker:
         tks = torch.randint(
             0,
             self.model_cfg.vocab_size,
-            (self.bench_cfg.batch_size, self.model_cfg.context_length),
+            (self.bench_cfg.batch_size, self.model_cfg.context_length + 1),
             device=self.model_cfg.device,
             dtype=torch.int,
         )
@@ -112,7 +113,7 @@ class BenchMarker:
             t=step,
             alpha_max=self.bench_cfg.lr,
             alpha_min=self.bench_cfg.min_lr,
-            t_w=self.bench_cfg.warm_up,
+            t_w=self.bench_cfg.lr_warm_up,
             t_c=self.bench_cfg.steps,
         )
 
@@ -263,6 +264,7 @@ def parse_args() -> tuple[ModelConfig, BenchConfig]:
     bench_group.add_argument("--no_unit_ms", dest="unit_ms", action="store_false", default=True)
     bench_group.add_argument("--batch_size", type=int, default=4)
     bench_group.add_argument("--lr", type=float, default=1.5e-3)
+    bench_group.add_argument("--lr_warm_up", type=int, default=50)
     bench_group.add_argument("--min_lr", type=float, default=1.5e-4)
     bench_group.add_argument("--weight_decay", type=float, default=0.1)
     bench_group.add_argument("--eps", type=float, default=1e-8)
@@ -292,6 +294,7 @@ def parse_args() -> tuple[ModelConfig, BenchConfig]:
         unit_ms=args.unit_ms,
         batch_size=args.batch_size,
         lr=args.lr,
+        lr_warm_up=args.lr_warm_up,
         min_lr=args.min_lr,
         weight_decay=args.weight_decay,
         eps=args.eps,
