@@ -71,27 +71,39 @@ Context length is 512 unless otherwise specified.
   *Deliverable:* A 1-2 sentence response with your timings.
 
   #response[
-    I measured the timing with 50 steps and 5 warm-up steps. A forward pass takes 20.65 ms with 2.66 ms standard deviation (relatively 12.88%), a backward pass takes 23.67 ms with 3.35 ms standard deviation (relatively 14.14%).
+    I measured the timing with various steps and 5 warm-up steps. A forward pass takes 40.33 ms with 2.71 ms standard deviation (relatively 6.72%), a backward pass takes 43.53 ms with 4.02 ms standard deviation (relatively 9.23%). Besides, more evaluated steps do not make markedly difference.
     #figure(
-      caption: "Basic benchmarking results",
       table(
-        columns: (auto, auto, auto),
+        columns: (auto, auto, auto, auto, auto, auto, auto),
         inset: (x: 8pt, y: 4.5pt),
-        align: (left, center, center),
+        align: (left, right, right, right, right, right, right),
         stroke: none,
 
+        // top line
         table.hline(stroke: 1.2pt),
-        [Stage], [Mean (ms)], [Std (ms)],
-        table.hline(stroke: 0.6pt),
+        table.header(
+          table.cell(rowspan: 2, align: horizon + left)[*Stage*],
+          table.cell(colspan: 2, align: center)[*50 Steps (ms)*],
+          table.cell(colspan: 2, align: center)[*150 Steps (ms)*],
+          table.cell(colspan: 2, align: center)[*500 Steps (ms)*],
+          table.hline(start: 1, end: 7, stroke: 0.5pt),
+          [Mean], [Std], [Mean], [Std], [Mean], [Std],
+        ),
 
-        [Prepare], [0.0902], [0.0259],
-        [Forward], [20.6506], [2.6613],
-        [Backward], [23.6743], [3.3483],
-        [Optimizer], [2.8455], [0.3755],
+        // header split
+        table.hline(stroke: 0.6pt),
+        [Prepare], [0.0793], [0.0076], [0.0813], [0.0090], [0.0806], [0.0223],
+        [Forward], [40.3289], [2.7126], [42.4276], [3.2337], [41.5421], [2.2385],
+        [Backward], [43.5285], [4.0191], [44.4743], [2.2116], [44.0380], [3.1208],
+        [Optimizer], [5.6423], [0.9954], [5.4675], [0.4122], [5.5833], [0.6507],
+
         table.hline(stroke: 0.4pt),
-        [Total], [47.2606], [6.1087],
+        [Total], [89.5790], [5.5102], [92.4508], [4.5914], [91.2441], [4.4689],
+
+        // bottom
         table.hline(stroke: 1.2pt),
       ),
+      caption: [Benchmarking with 5 warm-up steps],
     )
   ]
 
@@ -100,7 +112,7 @@ Context length is 512 unless otherwise specified.
   *Deliverable:* A 2-3 sentence response.
 
   #response[
-    Without warm-up steps, the mean latency at each stage increases markedly, and the total standard deviation is over 16 times higher than that with warm-up. This discrepancy is primarily attributed to the cold-start overheads of the GPU runtime and deep learning framework—such as CUDA context initialization, PyTorch memory caching allocator initialization (avoiding repeated `cudaMalloc`). Incorporating just 1 or 2 warm-up steps effectively eliminates these initialization artifacts, resulting in stable performance with significantly reduced standard deviation.
+    Without warm-up steps, the mean latency at each stage increases markedly, and the total standard deviation is over 17 times higher than that with warm-up. This discrepancy is primarily attributed to the cold-start overheads of the GPU runtime and deep learning framework—such as CUDA context initialization, PyTorch memory caching allocator initialization (avoiding repeated `cudaMalloc`). Incorporating just 1 or 2 warm-up steps effectively eliminates these initialization artifacts, resulting in stable performance with significantly reduced standard deviation.
 
     *Note: The latency is not driven by GPU hardware cache which is limited to tens of megabytes. It is completely flushed during a single forward and backward pass.*
 
@@ -124,19 +136,18 @@ Context length is 512 unless otherwise specified.
 
         // header split
         table.hline(stroke: 0.6pt),
-
-        [Prepare], [0.1695], [0.5768], [0.0843], [0.0169], [0.0845], [0.0176],
-        [Forward], [38.2242], [127.3257], [19.8813], [4.0689], [19.9290], [3.6766],
-        [Backward], [25.3251], [18.9235], [22.5781], [4.5535], [22.8588], [4.6035],
-        [Optimizer], [3.0423], [2.1910], [2.7499], [0.5143], [2.8101], [0.4890],
+        [Prepare], [0.1686], [0.6106], [0.0754], [0.0097], [0.0781], [0.0107],
+        [Forward], [59.1047], [130.3580], [39.3797], [4.0224], [39.8591], [3.9584],
+        [Backward], [44.4363], [14.5282], [41.8902], [4.3877], [42.6913], [4.5618],
+        [Optimizer], [5.8531], [2.2878], [5.4175], [0.6076], [5.4019], [0.4402],
 
         table.hline(stroke: 0.4pt),
-        [Total], [66.7611], [148.5845], [45.2936], [8.9231], [45.6824], [8.5872],
+        [Total], [109.5627], [147.1171], [86.7629], [8.6414], [88.0305], [8.3879],
 
         // bottom
         table.hline(stroke: 1.2pt),
       ),
-      caption: [Warm-up ablation],
+      caption: [Warm-up ablation with 50 evaluated steps],
     )
   ]
 
