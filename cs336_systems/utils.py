@@ -46,3 +46,7 @@ def annotated_scaled_dot_product_attention(Q: torch.Tensor, K: torch.Tensor, V: 
     with nvtx.range("final matmul"):
         res = einx.dot("... n [m], ... [m] d_v -> ... n d_v", sftmx, V)
     return res
+
+
+def fake_cosine_annealing(t: int, alpha_max: float, alpha_min: float, t_w: int, t_c: int) -> float:
+    return 1.5e-3

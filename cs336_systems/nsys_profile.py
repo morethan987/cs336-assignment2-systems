@@ -11,10 +11,12 @@ from pathlib import Path
 # _mha.scaled_dot_product_attention = annotated_scaled_dot_product_attention  # type: ignore
 import torch
 from cs336_basics.layers import TransformerLM, cross_entropy
-from cs336_basics.train_loop import AdamW, ModelConfig, cosine_annealing, gradient_clipping
+from cs336_basics.train_loop import AdamW, ModelConfig, gradient_clipping
 from cs336_basics.train_loop.utils import parse_dtype
 from torch.cuda import nvtx
 from tqdm import tqdm
+
+from cs336_systems.utils import fake_cosine_annealing
 
 
 @dataclass
@@ -106,7 +108,7 @@ class NsysBenchMarker:
         return tks[:, :-1], tks[:, 1:]
 
     def _get_lr(self, step: int) -> float:
-        return cosine_annealing(
+        return fake_cosine_annealing(
             t=step,
             alpha_max=self.bench_cfg.lr,
             alpha_min=self.bench_cfg.min_lr,

@@ -11,11 +11,11 @@ import numpy.typing as npt
 import pandas as pd
 import torch
 from cs336_basics.layers import TransformerLM, cross_entropy
-from cs336_basics.train_loop import AdamW, ModelConfig, cosine_annealing, gradient_clipping
+from cs336_basics.train_loop import AdamW, ModelConfig, gradient_clipping
 from cs336_basics.train_loop.utils import parse_dtype
 from tqdm import tqdm
 
-from cs336_systems.utils import export_typst
+from cs336_systems.utils import export_typst, fake_cosine_annealing
 
 
 @dataclass
@@ -109,7 +109,7 @@ class BenchMarker:
         return tks[:, :-1], tks[:, 1:]
 
     def _get_lr(self, step: int) -> float:
-        return cosine_annealing(
+        return fake_cosine_annealing(
             t=step,
             alpha_max=self.bench_cfg.lr,
             alpha_min=self.bench_cfg.min_lr,
