@@ -159,19 +159,118 @@ Profile your forward pass, backward pass, and optimizer step using nsys with two
 
   *Deliverable*: A 1-2 sentence response.
 
-  #response[]
+  #response[
+    Forward time costs varies between models. The time cost of `small_ctx512` is 5 ms larger than that measured by naive method which is probably caused by `nsys`.
+
+    #figure(
+      table(
+        columns: (auto, auto, auto, auto, auto, auto),
+        inset: (x: 8pt, y: 4.5pt),
+        align: (left, right, right, right, right, right),
+        stroke: none,
+
+        // top line
+        table.hline(stroke: 1.2pt),
+        table.header(
+          table.cell(rowspan: 2, align: horizon + left)[*Stage*],
+          table.cell(colspan: 3, align: center)[*Small*],
+          table.cell(colspan: 2, align: center)[*Medium*],
+          table.hline(start: 1, end: 6, stroke: 0.5pt),
+          [ctx512], [ctx1024], [ctx2048], [ctx512], [ctx1024],
+        ),
+
+        // header split
+        table.hline(stroke: 0.6pt),
+        [Prepare], [0.0013], [0.0016], [0.0016], [0.0014], [0.0014],
+        [Forward], [45.8780], [35.3587], [114.0988], [71.3086], [99.9471],
+        [Backward], [47.5961], [83.2663], [257.1673], [77.7094], [219.9908],
+        [Optimizer], [7.6235], [3.3185], [3.3330], [9.7619], [10.3211],
+
+        // bottom
+        table.hline(stroke: 1.2pt),
+      ),
+      caption: [Benchmarking with `nsys`],
+    )
+  ]
 
 + What CUDA kernel takes the most cumulative GPU time during the forward pass? How many times is this kernel invoked during a single forward pass of your model? Is it the same kernel that takes the most runtime when you do both forward and backward passes? (Hint: look at the “CUDA GPU Kernel Summary” under “Stats System View”, and filter using NVTX ranges to identify which parts of the model are responsible for which kernels.)
 
   *Deliverable*: A 1-2 sentence response.
 
-  #response[]
+  #response[
+    It is `gemm`, which means General Matrix Multiply ($D = alpha A B + beta C$), that dominants the forward pass time cost. The only exception occures on `small_ctx2048` model where the `masked_fill` is the most expensive. This should be attributed to computation and memory grap -- computation has a much larger throughput than memory operations.
+
+    The `gemm` is called at lease 25 times during a single forward pass. The most expensive kernel is the same kind when input is small (both are `gemm` or its fused version). But the `vectorized_mul` surpass `gemm` during backward pass when input is large due to the heavy memory movement when apllying elementwise multiplication.
+
+    By the way, the size of `gemm` is not the size of input data because of the auto-tiling in GPU.
+
+    #figure(
+      table(
+        columns: (auto, 1fr, 1fr, 1fr, 1fr, 1fr),
+        inset: (x: 6pt, y: 4.5pt),
+        align: (left, center, center, center, center, center),
+        stroke: none,
+
+        // top line
+        table.hline(stroke: 1.2pt),
+        table.header(
+          table.cell(rowspan: 2, align: horizon + left)[*Stage*],
+          table.cell(colspan: 3, align: center)[*Small*],
+          table.cell(colspan: 2, align: center)[*Medium*],
+          table.hline(start: 1, end: 6, stroke: 0.5pt),
+          [ctx512], [ctx1024], [ctx2048], [ctx512], [ctx1024],
+        ),
+
+        // header split
+        table.hline(stroke: 0.6pt),
+        [Kernel], [gemm (128×128)], [gemm (128×64)], [masked_fill], [gemm (128×128)], [gemm (64×128)],
+        [cumu_time (ms)], [9.1304], [17.2556], [55.7434], [55.2499], [58.8550],
+        [count], [25], [60], [12], [168], [48],
+        [avg_time (ms)], [0.0730], [0.0575], [0.9291], [0.0658], [0.2452],
+
+        // bottom
+        table.hline(stroke: 1.2pt),
+      ),
+      caption: [Forward Top Kernel],
+    )
+    #figure(
+      table(
+        columns: (auto, 1fr, 1fr, 1fr, 1fr, 1fr),
+        inset: (x: 6pt, y: 4.5pt),
+        align: (left, center, center, center, center, center),
+        stroke: none,
+
+        // top line
+        table.hline(stroke: 1.2pt),
+        table.header(
+          table.cell(rowspan: 2, align: horizon + left)[*Stage*],
+          table.cell(colspan: 3, align: center)[*Small*],
+          table.cell(colspan: 2, align: center)[*Medium*],
+          table.hline(start: 1, end: 6, stroke: 0.5pt),
+          [ctx512], [ctx1024], [ctx2048], [ctx512], [ctx1024],
+        ),
+
+        // header split
+        table.hline(stroke: 0.6pt),
+        [Kernel], [gemm_relu], [vectorized mul], [vectorized mul], [gemm (128×128)], [vectorized mul],
+        [cumu_time (ms)], [24.0571], [56.7776], [192.7157], [54.0182], [152.5319],
+        [count], [109], [72], [72], [168], [144],
+        [avg_time (ms)], [0.0441], [0.1577], [0.5353], [0.0643], [0.2118],
+
+        // bottom
+        table.hline(stroke: 1.2pt),
+      ),
+      caption: [Backward Top Kernel],
+    )
+  ]
 
 + Although the vast majority of FLOPs take place in matrix multiplications, you will notice that several other kernels still take a non-trivial amount of the overall runtime. What other kernels besides matrix multiplies do you see accounting for non-trivial CUDA runtime in the forward pass?
 
   *Deliverable*: A 1-2 sentence response.
 
-  #response[]
+  #response[
+    The other kernels that account non-trivical runtime are elementwise operations (e.g., vectorized mul, scalar mul, elementwise addition or exp) or memory access operations (e.g., masked fill, tensor copy)
+  ]
 
 + Profile running one complete training step with your implementation of AdamW (i.e., the forward pass, computing the loss and running a backward pass, and finally an optimizer step, as you’d do during training). How does the fraction of time spent on matrix multiplication change, compared to doing inference (forward pass only)? How about other kernels?
 

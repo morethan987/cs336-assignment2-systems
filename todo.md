@@ -1,7 +1,7 @@
 Tasks:
 
-- [ ] redo the exp1 with latest model size params
-- [ ] update note file and commit
+- [x] redo the exp1 with latest model size params
+- [x] update note file and commit
 
 ```sh
 uv run cs336_systems/benchmarking_script.py --name basic_bench_w5_s50 --warm_up 5 --steps 50
@@ -16,13 +16,13 @@ uv run cs336_systems/benchmarking_script.py --name basic_bench_w5_s500 --warm_up
 
 Expects:
 
-- [ ] the logs in `benchmark_res` directory
+- [x] the logs in `benchmark_res` directory
 
 ---
 
 Tasks:
 
-- [ ] nsys basic exp, no monkey patch, check the correctness of code
+- [x] nsys basic exp, no monkey patch, check the correctness of code
 
 ```sh
 # for ui
@@ -53,14 +53,14 @@ OUT_DIR="profiles/$(date +'%Y%m%d_%H%M%S')" && mkdir -p "$OUT_DIR" && uv run nsy
 
 Expects:
 
-- [ ] log in `profile` directory and statistic printed in terminal
+- [x] log in `profile` directory and statistic printed in terminal
 
 ---
 
 
 Tasks:
 
-- [ ] longest context length experiment
+- [x] longest context length experiment
 
 ```sh
 uv run cs336_systems/benchmarking_script.py --name context_length --warm_up 5 --steps 5000 --context_length 1024
@@ -71,4 +71,5 @@ uv run cs336_systems/benchmarking_script.py --name context_length --warm_up 5 --
 
 Expects:
 
-- [ ] longest power-of-two context length
+- [x] longest power-of-two context length: 2048
+
