@@ -2,10 +2,6 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 
-# import cs336_basics.layers.multihead_self_attention as _mha
-# from cs336_systems.utils import annotated_scaled_dot_product_attention
-# # monkey patch
-# _mha.scaled_dot_product_attention = annotated_scaled_dot_product_attention  # type: ignore
 import torch
 from cs336_basics.layers import TransformerLM, cross_entropy
 from cs336_basics.train_loop import AdamW, ModelConfig, gradient_clipping
@@ -14,6 +10,14 @@ from torch.cuda import nvtx
 from tqdm import tqdm
 
 from cs336_systems.utils import fake_cosine_annealing
+
+MODEL_SIZES = {
+    "small": {"d_model": 768, "d_ff": 3072, "num_layers": 12, "num_heads": 12},
+    "medium": {"d_model": 1024, "d_ff": 4096, "num_layers": 24, "num_heads": 16},
+    "large": {"d_model": 1280, "d_ff": 5120, "num_layers": 36, "num_heads": 20},
+    "xl": {"d_model": 2560, "d_ff": 10240, "num_layers": 32, "num_heads": 32},
+    "10b": {"d_model": 4608, "d_ff": 12288, "num_layers": 50, "num_heads": 36},
+}
 
 
 @dataclass
@@ -94,10 +98,6 @@ class NsysBenchMarker:
             t_c=self.bench_cfg.steps,
         )
 
-    @torch.no_grad()
-    def infer_step(self, step: int):
-        pass
-
     # @nvtx.range("train_step")
     def train_step(self, step: int):
         # with nvtx.range("prepare"):
@@ -139,20 +139,17 @@ class NsysBenchMarker:
 
 
 def parse_args() -> tuple[ModelConfig, BenchConfig]:
-    parser = argparse.ArgumentParser(description="Transformer Language Model BenchMark", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser = argparse.ArgumentParser(description="Transformer Language Model BenchMark")
 
     # Model
     model_group = parser.add_argument_group("Model Arguments")
+    model_group.add_argument("--model_size", type=str, default="small", choices=["small", "medium", "large", "xl", "10B", "10b"])
     model_group.add_argument("--vocab_size", type=int, default=10000)
     model_group.add_argument("--context_length", type=int, default=512)
-    # model_group.add_argument("--num_layers", type=int, default=12)
-    # model_group.add_argument("--d_model", type=int, default=768)
-    # model_group.add_argument("--num_heads", type=int, default=12)
-    # model_group.add_argument("--d_ff", type=int, default=3072)
-    model_group.add_argument("--num_layers", type=int, default=24)
-    model_group.add_argument("--d_model", type=int, default=1024)
-    model_group.add_argument("--num_heads", type=int, default=16)
-    model_group.add_argument("--d_ff", type=int, default=4096)
+    model_group.add_argument("--num_layers", type=int, default=None, help="Override num_layers")
+    model_group.add_argument("--d_model", type=int, default=None, help="Override d_model")
+    model_group.add_argument("--num_heads", type=int, default=None, help="Override num_heads")
+    model_group.add_argument("--d_ff", type=int, default=None, help="Override d_ff")
     model_group.add_argument("--rope_theta", type=float, default=10000.0)
     model_group.add_argument("--device", type=torch.device, default=torch.device("cuda:0" if torch.cuda.is_available() else "cpu"))
     model_group.add_argument("--dtype", type=parse_dtype, default=torch.bfloat16)
@@ -176,14 +173,23 @@ def parse_args() -> tuple[ModelConfig, BenchConfig]:
 
     args = parser.parse_args()
 
+    # parse model size
+    size_key = args.model_size.lower()
+    preset = MODEL_SIZES[size_key]
+    num_layers = args.num_layers if args.num_layers is not None else preset["num_layers"]
+    d_model = args.d_model if args.d_model is not None else preset["d_model"]
+    num_heads = args.num_heads if args.num_heads is not None else preset["num_heads"]
+    d_ff = args.d_ff if args.d_ff is not None else preset["d_ff"]
+    print(f"--> Using Model Size: {size_key} (layers={num_layers}, d_model={d_model}, heads={num_heads}, d_ff={d_ff})")
+
     # dataclass
     model_cfg = ModelConfig(
         vocab_size=args.vocab_size,
         context_length=args.context_length,
-        num_layers=args.num_layers,
-        d_model=args.d_model,
-        num_heads=args.num_heads,
-        d_ff=args.d_ff,
+        num_layers=num_layers,
+        d_model=d_model,
+        num_heads=num_heads,
+        d_ff=d_ff,
         rope_theta=args.rope_theta,
         device=args.device,
         dtype=args.dtype,
