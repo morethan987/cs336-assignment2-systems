@@ -347,3 +347,42 @@ Profile your forward pass, backward pass, and optimizer step using nsys with two
       ],
     )
   ]
+
+== Mixed precision accumulation
+
+Run the following code and comment on the accuracy of the results.
+
+```py
+s = torch.tensor(0,dtype=torch.float32)
+for i in range(1000):
+  s += torch.tensor(0.01,dtype=torch.float32)
+print(s)
+
+s = torch.tensor(0,dtype=torch.float16)
+for i in range(1000):
+  s += torch.tensor(0.01,dtype=torch.float16)
+print(s)
+
+s = torch.tensor(0,dtype=torch.float32)
+for i in range(1000):
+  s += torch.tensor(0.01,dtype=torch.float16)
+print(s)
+
+s = torch.tensor(0,dtype=torch.float32)
+for i in range(1000):
+  x = torch.tensor(0.01,dtype=torch.float16)
+  s += x.type(torch.float32)
+print(s)
+```
+
+*Deliverable*: A 2-3 sentence response.
+
+#response[
+  Pure FP16 yields the worst accuracy, with an error 496 times that of pure FP32. The last two results indicate that automatic type casting occurs during the addition.
+  ```txt
+  tensor(10.0001)
+  tensor(9.9531, dtype=torch.float16)
+  tensor(10.0021)
+  tensor(10.0021)
+  ```
+]
