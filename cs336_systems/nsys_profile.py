@@ -1,8 +1,5 @@
 import argparse
-import json
-from dataclasses import asdict, dataclass
-from datetime import datetime as dt
-from datetime import timedelta, timezone
+from dataclasses import dataclass
 from pathlib import Path
 
 # import cs336_basics.layers.multihead_self_attention as _mha
@@ -48,7 +45,6 @@ class NsysBenchMarker:
 
         # seeds and dirs
         self._set_seed()
-        self.res_dir = self._setup_res_dir()
 
         # construct model and optimizer
         self.model = TransformerLM(
@@ -72,24 +68,6 @@ class NsysBenchMarker:
 
     def _set_seed(self):
         torch.manual_seed(self.bench_cfg.torch_seed)
-
-    def _setup_res_dir(self) -> Path:
-        timestamp = dt.now(timezone(timedelta(hours=8))).strftime("%Y%m%d_%H%M%S")
-        res_name = f"{self.bench_cfg.name}_{timestamp}"
-        res_dir = self.bench_cfg.res_dir / res_name
-        res_dir.mkdir(parents=True, exist_ok=True)
-
-        # save hyperparams
-        with open(res_dir / "args.json", "w", encoding="utf-8") as f:
-
-            def serialize(obj):
-                if isinstance(obj, (torch.device, torch.dtype, Path)):
-                    return str(obj)
-                raise TypeError(f"Type {type(obj)} not serializable")
-
-            json.dump({"model_cfg": asdict(self.model_cfg), "bench_cfg": asdict(self.bench_cfg)}, f, indent=4, default=serialize)
-
-        return res_dir
 
     def generate_data(self) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -147,7 +125,7 @@ class NsysBenchMarker:
             self.train_step(step)
         torch.cuda.synchronize()
 
-        print(f"Starting benchmarking: {self.res_dir.name}\nSteps for benchmarking: {self.bench_cfg.steps}")
+        print(f"Steps for benchmarking: {self.bench_cfg.steps}")
         torch.cuda.cudart().cudaProfilerStart()
         for step in tqdm(range(1, self.bench_cfg.steps + 1), desc="benchmarking", dynamic_ncols=True):
             self.train_step(step)
