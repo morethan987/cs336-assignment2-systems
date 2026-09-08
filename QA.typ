@@ -1,17 +1,17 @@
 #import "@preview/ilm:2.1.1": *
 
-#set text(lang: "en")
-
 #show: ilm.with(
   title: [CS336 Assignment 2],
   authors: "Morethan",
   date: datetime(year: 2026, month: 09, day: 04),
   abstract: [Language Modeling from Scratch - Systems and Parallelism],
   bibliography: bibliography("refs.bib"),
-  figure-index: (enabled: true),
-  table-index: (enabled: true),
-  listing-index: (enabled: true),
+  figure-index: (enabled: false),
+  table-index: (enabled: false),
+  listing-index: (enabled: false),
 )
+#set text(lang: "en")
+#set page(paper: "a4", margin: (x: 1cm, y: 1cm))
 #set enum(numbering: "(a)")
 
 #let response(title: "Response", body) = block(
@@ -103,7 +103,7 @@ Context length is 512 unless otherwise specified.
         // bottom
         table.hline(stroke: 1.2pt),
       ),
-      caption: [Benchmarking with 5 warm-up steps],
+      caption: [Benchmarking with 5 warm-up steps and 50 evalued steps on `small` model with 512 context length],
     )
   ]
 
@@ -147,7 +147,7 @@ Context length is 512 unless otherwise specified.
         // bottom
         table.hline(stroke: 1.2pt),
       ),
-      caption: [Warm-up ablation with 50 evaluated steps],
+      caption: [Warm-up ablation with 50 evaluated steps on `small` model with 512 context length],
     )
   ]
 
@@ -206,7 +206,7 @@ Profile your forward pass, backward pass, and optimizer step using nsys with two
 
     #figure(
       table(
-        columns: (auto, 1fr, 1fr, 1fr, 1fr, 1fr),
+        columns: (auto, auto, auto, auto, auto, auto),
         inset: (x: 6pt, y: 4.5pt),
         align: (left, center, center, center, center, center),
         stroke: none,
@@ -223,10 +223,10 @@ Profile your forward pass, backward pass, and optimizer step using nsys with two
 
         // header split
         table.hline(stroke: 0.6pt),
-        [Kernel], [gemm (128×128)], [gemm (128×64)], [masked_fill], [gemm (128×128)], [gemm (64×128)],
-        [cumu_time (ms)], [9.1304], [17.2556], [55.7434], [55.2499], [58.8550],
+        [Kernel], [gemm(128×128)], [gemm(128×64)], [masked_fill], [gemm(128×128)], [gemm(64×128)],
+        [cumu_time], [9.1304], [17.2556], [55.7434], [55.2499], [58.8550],
         [count], [25], [60], [12], [168], [48],
-        [avg_time (ms)], [0.0730], [0.0575], [0.9291], [0.0658], [0.2452],
+        [avg_time], [0.0730], [0.0575], [0.9291], [0.0658], [0.2452],
 
         // bottom
         table.hline(stroke: 1.2pt),
@@ -235,7 +235,7 @@ Profile your forward pass, backward pass, and optimizer step using nsys with two
     )
     #figure(
       table(
-        columns: (auto, 1fr, 1fr, 1fr, 1fr, 1fr),
+        columns: (auto, auto, auto, auto, auto, auto),
         inset: (x: 6pt, y: 4.5pt),
         align: (left, center, center, center, center, center),
         stroke: none,
@@ -252,10 +252,10 @@ Profile your forward pass, backward pass, and optimizer step using nsys with two
 
         // header split
         table.hline(stroke: 0.6pt),
-        [Kernel], [gemm_relu], [vectorized mul], [vectorized mul], [gemm (128×128)], [vectorized mul],
-        [cumu_time (ms)], [24.0571], [56.7776], [192.7157], [54.0182], [152.5319],
+        [Kernel], [gemm_relu], [vectorized_mul], [vectorized_mul], [gemm(128×128)], [vectorized_mul],
+        [cumu_time], [24.0571], [56.7776], [192.7157], [54.0182], [152.5319],
         [count], [109], [72], [72], [168], [144],
-        [avg_time (ms)], [0.0441], [0.1577], [0.5353], [0.0643], [0.2118],
+        [avg_time], [0.0441], [0.1577], [0.5353], [0.0643], [0.2118],
 
         // bottom
         table.hline(stroke: 1.2pt),
@@ -272,14 +272,78 @@ Profile your forward pass, backward pass, and optimizer step using nsys with two
     The other kernels that account non-trivical runtime are elementwise operations (e.g., vectorized mul, scalar mul, elementwise addition or exp) or memory access operations (e.g., masked fill, tensor copy)
   ]
 
-+ Profile running one complete training step with your implementation of AdamW (i.e., the forward pass, computing the loss and running a backward pass, and finally an optimizer step, as you’d do during training). How does the fraction of time spent on matrix multiplication change, compared to doing inference (forward pass only)? How about other kernels?
++ Profile running one complete training step with your implementation of AdamW (i.e., the forward pass, computing the loss and running a backward pass, and finally an optimizer step, as you'd do during training). How does the fraction of time spent on matrix multiplication change, compared to doing inference (forward pass only)? How about other kernels?
 
   *Deliverable*: A 1-2 sentence response.
 
-  #response[]
+  #response[
+    The feaction of time spent on matmul decreases during a complete training step compared to forward-only inference. Conversely, other kernels (such as element-wise operations) account for a larger proportion of the overall runtime.
+
+    #figure(
+      table(
+        columns: (auto, auto, auto, auto, auto, auto),
+        inset: (x: 6pt, y: 4.5pt),
+        align: (left, center, center, center, center, center),
+        stroke: none,
+
+        // top line
+        table.hline(stroke: 1.2pt),
+        table.header(
+          table.cell(rowspan: 2, align: horizon + left)[*Stage*],
+          table.cell(colspan: 3, align: center)[*Small*],
+          table.cell(colspan: 2, align: center)[*Medium*],
+          table.hline(start: 1, end: 6, stroke: 0.5pt),
+          [ctx512], [ctx1024], [ctx2048], [ctx512], [ctx1024],
+        ),
+
+        // header split
+        table.hline(stroke: 0.6pt),
+        [Forward only], [47.0%], [31.7%], [24.8%], [50.4%], [34.9%],
+        [Train step], [40.8%], [30.6%], [24.5%], [41.4%], [32.7%],
+
+        // bottom
+        table.hline(stroke: 1.2pt),
+      ),
+      caption: [Matmul ratios on different ranges],
+    )
+  ]
 
 + Compare the runtime of the softmax operation versus the matrix multiplication operations within the self-attention layer of your model during a forward pass. How does the difference in runtimes compare to the difference in FLOPs?
 
   *Deliverable*: A 1-2 sentence response.
 
-  #response[]
+  #response[
+    The matmul operation takes 102.40 times more FLOPs but cost less half of the time than that of softmax operation. This finally leads to hundreds times grap on throughput. This is the strongest motivation for FlashAttention.
+    #let x = math.times
+    #figure(
+      table(
+        columns: (auto, auto, auto, auto, auto, auto, auto, auto, auto),
+        inset: (x: 5pt, y: 4.5pt),
+        align: (left, center, center, center, center, center, center, center, center),
+        stroke: none,
+
+        table.hline(stroke: 1.2pt),
+        table.header(
+          table.cell(rowspan: 2, align: horizon + left)[*Config*],
+          table.cell(colspan: 3, align: center)[*Matmul($Q K^T + A V$)*],
+          table.cell(colspan: 3, align: center)[*Softmax*],
+          table.cell(colspan: 2, align: center)[*Ratio(MM/SM)*],
+          table.hline(start: 1, end: 9, stroke: 0.5pt),
+          [Time (ms)], [GFLOPs], [TFLOP/s], [Time (ms)], [GFLOPs], [TFLOP/s], [Time], [Throughput],
+        ),
+
+        table.hline(stroke: 0.6pt),
+        [`small_ctx512`], [2.82], [965.5], [342.38], [5.91], [9.4], [1.60], [0.48#x], [214.4#x],
+        [`small_ctx1024`], [15.24], [3865.2], [253.62], [51.00], [37.8], [0.74], [0.30#x], [342.7#x],
+        [`small_ctx2048`], [58.51], [15460.7], [264.24], [212.49], [151.0], [0.71], [0.28#x], [371.9#x],
+        table.hline(stroke: 0.3pt),
+        [`medium_ctx512`], [6.76], [2578.7], [381.46], [16.29], [25.2], [1.54], [0.41#x], [246.9#x],
+        [`medium_ctx1024`], [40.52], [10309.1], [254.42], [142.81], [100.7], [0.70], [0.28#x], [360.9#x],
+
+        table.hline(stroke: 1.2pt),
+      ),
+      caption: [
+        Runtime, FLOPs, and Throughput comparison between MatMul ($Q K^T$ and $A V$) and Softmax within the Self-Attention forward pass. Note that the theoretical FLOPs ratio is constant at $102.40times$.
+      ],
+    )
+  ]

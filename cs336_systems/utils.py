@@ -29,7 +29,7 @@ def export_typst(
     return typst_code
 
 
-@nvtx.range("scaled dot product attention")
+# @nvtx.range("scaled dot product attention")
 def annotated_scaled_dot_product_attention(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
     d_k = torch.tensor(Q.shape[-1])
 

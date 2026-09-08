@@ -94,13 +94,18 @@ class NsysBenchMarker:
             t_c=self.bench_cfg.steps,
         )
 
-    def train_step(self, step: int):
-        with nvtx.range("prepare"):
-            lr_t = self._get_lr(step)
-            self.optimizer.set_lr(lr_t)
+    @torch.no_grad()
+    def infer_step(self, step: int):
+        pass
 
-            # take data
-            x, targets = self.generate_data()
+    # @nvtx.range("train_step")
+    def train_step(self, step: int):
+        # with nvtx.range("prepare"):
+        lr_t = self._get_lr(step)
+        self.optimizer.set_lr(lr_t)
+
+        # take data
+        x, targets = self.generate_data()
 
         # forward
         with nvtx.range("forward"):
@@ -109,13 +114,13 @@ class NsysBenchMarker:
             loss = cross_entropy(logits, targets)
 
         # backward
-        with nvtx.range("backward"):
-            loss.backward()
-            gradient_clipping(self.model.parameters(), max_l2_norm=self.bench_cfg.grad_clip)
+        # with nvtx.range("backward"):
+        loss.backward()
+        gradient_clipping(self.model.parameters(), max_l2_norm=self.bench_cfg.grad_clip)
 
         # optimizer
-        with nvtx.range("optimizer"):
-            self.optimizer.step()
+        # with nvtx.range("optimizer"):
+        self.optimizer.step()
 
     def run(self):
         self.model.train()
@@ -140,10 +145,14 @@ def parse_args() -> tuple[ModelConfig, BenchConfig]:
     model_group = parser.add_argument_group("Model Arguments")
     model_group.add_argument("--vocab_size", type=int, default=10000)
     model_group.add_argument("--context_length", type=int, default=512)
-    model_group.add_argument("--num_layers", type=int, default=12)
-    model_group.add_argument("--d_model", type=int, default=768)
-    model_group.add_argument("--num_heads", type=int, default=12)
-    model_group.add_argument("--d_ff", type=int, default=3072)
+    # model_group.add_argument("--num_layers", type=int, default=12)
+    # model_group.add_argument("--d_model", type=int, default=768)
+    # model_group.add_argument("--num_heads", type=int, default=12)
+    # model_group.add_argument("--d_ff", type=int, default=3072)
+    model_group.add_argument("--num_layers", type=int, default=24)
+    model_group.add_argument("--d_model", type=int, default=1024)
+    model_group.add_argument("--num_heads", type=int, default=16)
+    model_group.add_argument("--d_ff", type=int, default=4096)
     model_group.add_argument("--rope_theta", type=float, default=10000.0)
     model_group.add_argument("--device", type=torch.device, default=torch.device("cuda:0" if torch.cuda.is_available() else "cpu"))
     model_group.add_argument("--dtype", type=parse_dtype, default=torch.bfloat16)

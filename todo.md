@@ -1,5 +1,71 @@
 Tasks:
 
+- [ ] Remove backward and optimizer step from nsys benchmarking to check whether stand alone froward differs from complete traning loop.
+
+```sh
+OUT_DIR="profiles/medium_ctx512_forward_only/$(date +'%Y%m%d_%H%M%S')" && mkdir -p "$OUT_DIR" && uv run nsys profile \
+  -o "$OUT_DIR/profile" \
+  --capture-range=cudaProfilerApi \
+  --capture-range-end=stop \
+  --trace=cuda,cudnn,cublas,nvtx \
+  --cuda-memory-usage=true \
+  --stats=true \
+  --force-overwrite=true \
+  -- python cs336_systems/nsys_profile.py --warm_up 5 --steps 5 --context_length 512
+```
+
+Expects:
+
+- [ ] With less nsys injection, the forward pass may become a little bit faster but no notable difference.
+
+---
+
+Tasks:
+
+- [ ] Warp the whole traning step only.
+
+```sh
+OUT_DIR="profiles/medium_ctx512_train_step/$(date +'%Y%m%d_%H%M%S')" && mkdir -p "$OUT_DIR" && uv run nsys profile \
+  -o "$OUT_DIR/profile" \
+  --capture-range=cudaProfilerApi \
+  --capture-range-end=stop \
+  --trace=cuda,cudnn,cublas,nvtx \
+  --cuda-memory-usage=true \
+  --stats=true \
+  --force-overwrite=true \
+  -- python cs336_systems/nsys_profile.py --warm_up 5 --steps 5 --context_length 512
+```
+
+Expects:
+
+- [ ] Get a comverged data instead of add data from different nvtx range.
+
+---
+
+Tasks:
+
+- [ ] Attention insight.
+
+```sh
+OUT_DIR="profiles/medium_ctx512_att_insight/$(date +'%Y%m%d_%H%M%S')" && mkdir -p "$OUT_DIR" && uv run nsys profile \
+  -o "$OUT_DIR/profile" \
+  --capture-range=cudaProfilerApi \
+  --capture-range-end=stop \
+  --trace=cuda,cudnn,cublas,nvtx \
+  --cuda-memory-usage=true \
+  --stats=true \
+  --force-overwrite=true \
+  -- python cs336_systems/nsys_profile.py --warm_up 5 --steps 5 --context_length 512
+```
+
+Expects:
+
+- [ ] Get a resonable time costs attribution.
+
+---
+
+Tasks:
+
 - [x] redo the exp1 with latest model size params
 - [x] update note file and commit
 
@@ -54,6 +120,10 @@ OUT_DIR="profiles/$(date +'%Y%m%d_%H%M%S')" && mkdir -p "$OUT_DIR" && uv run nsy
 Expects:
 
 - [x] log in `profile` directory and statistic printed in terminal
+
+Comment:
+
+- No need to run the first cmd, useless and takes much larger size.
 
 ---
 
