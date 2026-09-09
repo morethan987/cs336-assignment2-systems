@@ -33,7 +33,6 @@ def export_typst(
     return typst_code
 
 
-# @nvtx.range("scaled dot product attention")
 def annotated_scaled_dot_product_attention(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
     d_k = torch.tensor(Q.shape[-1])
 
@@ -52,10 +51,6 @@ def annotated_scaled_dot_product_attention(Q: torch.Tensor, K: torch.Tensor, V: 
     return res
 
 
-def fake_cosine_annealing(t: int, alpha_max: float, alpha_min: float, t_w: int, t_c: int) -> float:
-    return 1.5e-3
-
-
 MODEL_SIZES = {
     "small": {"d_model": 768, "d_ff": 3072, "num_layers": 12, "num_heads": 12},
     "medium": {"d_model": 1024, "d_ff": 4096, "num_layers": 24, "num_heads": 16},
@@ -67,25 +62,20 @@ MODEL_SIZES = {
 
 @dataclass
 class BenchConfig:
-    name: str
+    res_dir: Path
+    profilers: list[str]
     steps: int
     warm_up: int
     unit_ms: bool
     use_mixed_precision: bool
+    att_patch: bool
     batch_size: int
     lr: float
-    lr_warm_up: int
-    min_lr: float
     weight_decay: float
     eps: float
     grad_clip: float
-    res_dir: Path
     torch_seed: int
     betas: tuple[float, float] = (0.9, 0.95)
-
-    def validate(self):
-        if self.min_lr > self.lr:
-            raise ValueError(f"min_lr ({self.min_lr}) > lr ({self.lr})")
 
 
 def parse_args() -> tuple[ModelConfig, BenchConfig]:
@@ -106,20 +96,19 @@ def parse_args() -> tuple[ModelConfig, BenchConfig]:
 
     # Bench
     bench_group = parser.add_argument_group("Benchmark Arguments")
-    bench_group.add_argument("--name", type=str, default="bench")
+    bench_group.add_argument("--res_dir", type=Path, default=Path("benchmark_res/default_name"))
+    bench_group.add_argument("--profilers", type=lambda s: [item.strip() for item in s.split(",")], default=["timing"])
     bench_group.add_argument("--steps", type=int, required=True)
     bench_group.add_argument("--warm_up", type=int, required=True)
     bench_group.add_argument("--use_mixed_precision", action="store_true", default=False)
+    bench_group.add_argument("--att_patch", action="store_true", default=False)
     bench_group.add_argument("--no_unit_ms", dest="unit_ms", action="store_false", default=True)
     bench_group.add_argument("--batch_size", type=int, default=4)
     bench_group.add_argument("--lr", type=float, default=1.5e-3)
-    bench_group.add_argument("--lr_warm_up", type=int, default=50)
-    bench_group.add_argument("--min_lr", type=float, default=1.5e-4)
     bench_group.add_argument("--weight_decay", type=float, default=0.1)
     bench_group.add_argument("--eps", type=float, default=1e-8)
     bench_group.add_argument("--betas", type=float, default=(0.9, 0.95), nargs=2)
     bench_group.add_argument("--grad_clip", type=float, default=1.0)
-    bench_group.add_argument("--res_dir", type=Path, default=Path("benchmark_res"))
     bench_group.add_argument("--torch_seed", type=int, default=45)
 
     args = parser.parse_args()
@@ -146,25 +135,23 @@ def parse_args() -> tuple[ModelConfig, BenchConfig]:
         dtype=args.dtype,
     )
     bench_cfg = BenchConfig(
-        name=args.name,
+        res_dir=args.res_dir,
+        profilers=args.profilers,
         steps=args.steps,
         warm_up=args.warm_up,
         unit_ms=args.unit_ms,
         use_mixed_precision=args.use_mixed_precision,
+        att_patch=args.att_patch,
         batch_size=args.batch_size,
         lr=args.lr,
-        lr_warm_up=args.lr_warm_up,
-        min_lr=args.min_lr,
         weight_decay=args.weight_decay,
         eps=args.eps,
         betas=tuple(args.betas),
         grad_clip=args.grad_clip,
-        res_dir=args.res_dir,
         torch_seed=args.torch_seed,
     )
 
     # validate
     model_cfg.validate()
-    bench_cfg.validate()
 
     return model_cfg, bench_cfg
