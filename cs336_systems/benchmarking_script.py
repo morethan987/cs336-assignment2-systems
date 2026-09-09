@@ -1,7 +1,7 @@
-import argparse
 import json
 import timeit
-from dataclasses import asdict, dataclass
+from contextlib import nullcontext
+from dataclasses import asdict
 from datetime import datetime as dt
 from datetime import timedelta, timezone
 from pathlib import Path
@@ -12,34 +12,9 @@ import pandas as pd
 import torch
 from cs336_basics.layers import TransformerLM, cross_entropy
 from cs336_basics.train_loop import AdamW, ModelConfig, gradient_clipping
-from cs336_basics.train_loop.utils import parse_dtype
 from tqdm import tqdm
 
-from cs336_systems.utils import export_typst, fake_cosine_annealing
-
-
-@dataclass
-class BenchConfig:
-    name: str
-    steps: int
-    warm_up: int
-    unit_ms: bool
-    batch_size: int
-    lr: float
-    lr_warm_up: int
-    min_lr: float
-    weight_decay: float
-    eps: float
-    grad_clip: float
-    res_dir: Path
-    torch_seed: int
-    betas: tuple[float, float] = (0.9, 0.95)
-
-    def validate(self):
-        if self.min_lr > self.lr:
-            raise ValueError(f"min_lr ({self.min_lr}) > lr ({self.lr})")
-        if self.warm_up >= self.steps:
-            raise ValueError(f"warm_up ({self.warm_up}) >= max_steps ({self.steps})")
+from cs336_systems.utils import BenchConfig, export_typst, fake_cosine_annealing, parse_args
 
 
 class BenchMarker:
@@ -70,6 +45,9 @@ class BenchMarker:
             eps=self.bench_cfg.eps,
             betas=self.bench_cfg.betas,
         )
+
+        # precision context
+        self.precision_context = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if self.bench_cfg.use_mixed_precision else nullcontext()
 
     def _set_seed(self):
         torch.manual_seed(self.bench_cfg.torch_seed)
@@ -133,9 +111,10 @@ class BenchMarker:
         # forward
         self.optimizer.zero_grad()
         self._device_sync()
-        forward_start = timeit.default_timer()
-        logits = self.model(x)
-        loss = cross_entropy(logits, targets)
+        with self.precision_context:
+            forward_start = timeit.default_timer()
+            logits = self.model(x)
+            loss = cross_entropy(logits, targets)
         self._device_sync()
         forward = timeit.default_timer() - forward_start
 
@@ -239,76 +218,6 @@ class BenchMarker:
             print(f"{'Total Step':<{col_w_stage}} | {total_mean_str:>{col_w_data}} | {total_std_str:>{col_w_data}}")
 
         print("=" * total_width + "\n")
-
-
-def parse_args() -> tuple[ModelConfig, BenchConfig]:
-    parser = argparse.ArgumentParser(description="Transformer Language Model BenchMark", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-
-    # Model
-    model_group = parser.add_argument_group("Model Arguments")
-    model_group.add_argument("--vocab_size", type=int, default=10000)
-    model_group.add_argument("--context_length", type=int, default=512)
-    model_group.add_argument("--num_layers", type=int, default=12)
-    model_group.add_argument("--d_model", type=int, default=768)
-    model_group.add_argument("--num_heads", type=int, default=12)
-    model_group.add_argument("--d_ff", type=int, default=3072)
-    model_group.add_argument("--rope_theta", type=float, default=10000.0)
-    model_group.add_argument("--device", type=torch.device, default=torch.device("cuda:0" if torch.cuda.is_available() else "cpu"))
-    model_group.add_argument("--dtype", type=parse_dtype, default=torch.bfloat16)
-
-    # Bench
-    bench_group = parser.add_argument_group("Benchmark Arguments")
-    bench_group.add_argument("--name", type=str, default="bench")
-    bench_group.add_argument("--steps", type=int, required=True)
-    bench_group.add_argument("--warm_up", type=int, required=True)
-    bench_group.add_argument("--no_unit_ms", dest="unit_ms", action="store_false", default=True)
-    bench_group.add_argument("--batch_size", type=int, default=4)
-    bench_group.add_argument("--lr", type=float, default=1.5e-3)
-    bench_group.add_argument("--lr_warm_up", type=int, default=50)
-    bench_group.add_argument("--min_lr", type=float, default=1.5e-4)
-    bench_group.add_argument("--weight_decay", type=float, default=0.1)
-    bench_group.add_argument("--eps", type=float, default=1e-8)
-    bench_group.add_argument("--betas", type=float, default=(0.9, 0.95), nargs=2)
-    bench_group.add_argument("--grad_clip", type=float, default=1.0)
-    bench_group.add_argument("--res_dir", type=Path, default=Path("benchmark_res"))
-    bench_group.add_argument("--torch_seed", type=int, default=45)
-
-    args = parser.parse_args()
-
-    # dataclass
-    model_cfg = ModelConfig(
-        vocab_size=args.vocab_size,
-        context_length=args.context_length,
-        num_layers=args.num_layers,
-        d_model=args.d_model,
-        num_heads=args.num_heads,
-        d_ff=args.d_ff,
-        rope_theta=args.rope_theta,
-        device=args.device,
-        dtype=args.dtype,
-    )
-    bench_cfg = BenchConfig(
-        name=args.name,
-        steps=args.steps,
-        warm_up=args.warm_up,
-        unit_ms=args.unit_ms,
-        batch_size=args.batch_size,
-        lr=args.lr,
-        lr_warm_up=args.lr_warm_up,
-        min_lr=args.min_lr,
-        weight_decay=args.weight_decay,
-        eps=args.eps,
-        betas=tuple(args.betas),
-        grad_clip=args.grad_clip,
-        res_dir=args.res_dir,
-        torch_seed=args.torch_seed,
-    )
-
-    # validate
-    model_cfg.validate()
-    bench_cfg.validate()
-
-    return model_cfg, bench_cfg
 
 
 if __name__ == "__main__":
