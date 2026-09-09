@@ -1,5 +1,36 @@
 Tasks:
 
+- [ ] Run toy model
+
+```sh
+uv run cs336_systems/toy.py
+```
+
+---
+
+Tasks:
+
+- [ ] time cost comparation.
+
+```sh
+uv run cs336_systems/benchmarking_script.py \
+  --name mixed_precision_small \
+  --warm_up 5 \
+  --steps 50 \
+  --model_size small \
+  --use_mixed_precision
+
+uv run cs336_systems/benchmarking_script.py \
+  --name full_precision_small \
+  --warm_up 5 \
+  --steps 50 \
+  --model_size small
+```
+
+---
+
+Tasks:
+
 - [ ] Remove backward and optimizer step from nsys benchmarking to check whether stand alone froward differs from complete traning loop.
 
 ```sh
