@@ -50,7 +50,7 @@
     [10B], [4608], [12288], [50], [36],
     table.hline(stroke: 1.2pt),
   ),
-)
+)<model-specs>
 
 Context length is 512 unless otherwise specified.
 
@@ -386,3 +386,48 @@ print(s)
   tensor(10.0021)
   ```
 ]
+
+== Benchmarking mixed precision
+
++ Consider the following model:
+
+  ```py
+  class ToyModel(nn.Module):
+    def __init__(self, in_features: int, out_features: int):
+      super().__init__()
+      self.fc1 = nn.Linear(in_features, 10, bias=False)
+      self.ln = nn.LayerNorm(10)
+      self.fc2 = nn.Linear(10, out_features, bias=False)
+      self.relu = nn.ReLU()
+
+    def forward(self, x):
+      x = self.relu(self.fc1(x))
+      x = self.ln(x)
+      x = self.fc2(x)
+      return x
+  ```
+
+  Suppose we are training the model on a GPU and that the model parameters are originally in FP32. We'd like to use autocasting mixed precision with FP16. What are the data types of:
+
+  - the model parameters within the autocast context?
+  - the output of the first feed-forward layer (`ToyModel.fc1`)?
+  - the output of layer norm (`ToyModel.ln`)?
+  - the model's predicted logits?
+  - the loss?
+  - the model's gradients?
+
+  *Deliverable*: The data types for each of the components listed above.
+
+  #response[Model parameters keeps FP32 since the autocasting only applied when operations are launched to GPU.]
+
++ You should have seen that FP16 mixed precision autocasting treats the layer normalization layer differently than the feed-forward layers. What parts of layer normalization are sensitive to mixed precision? If we use BF16 instead of FP16, do we still need to treat layer normalization differently? Why or why not?
+
+  *Deliverable*: A 2-3 sentence response.
+
+  #response[]
+
++ Modify your benchmarking script to optionally run the model using mixed precision with BF16. Time the forward and backward passes with and without mixed-precision for each language model size described in @model-specs. Compare the results of using full precision versus mixed precision, and comment on any trends as model size changes. You may find the nullcontext no-op context manager to be useful.
+
+  *Deliverable*: A 2-3 sentence response with your timings and commentary.
+
+  #response[]
