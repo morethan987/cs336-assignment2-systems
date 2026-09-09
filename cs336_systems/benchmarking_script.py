@@ -106,13 +106,14 @@ class BenchMarker:
 
         # take data
         x, targets = self.generate_data()
+        self._device_sync()
         prepare = timeit.default_timer() - prepare_start
 
         # forward
         self.optimizer.zero_grad()
         self._device_sync()
+        forward_start = timeit.default_timer()
         with self.precision_context:
-            forward_start = timeit.default_timer()
             logits = self.model(x)
             loss = cross_entropy(logits, targets)
         self._device_sync()

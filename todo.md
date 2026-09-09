@@ -14,17 +14,19 @@ Tasks:
 
 ```sh
 uv run cs336_systems/benchmarking_script.py \
-  --name mixed_precision_small \
+  --name mixed_precision_bf16_large \
   --warm_up 5 \
   --steps 50 \
-  --model_size small \
+  --model_size large \
+  --dtype fp32 \
   --use_mixed_precision
 
 uv run cs336_systems/benchmarking_script.py \
-  --name full_precision_small \
+  --name full_precision_large \
   --warm_up 5 \
   --steps 50 \
-  --model_size small
+  --model_size large \
+  --dtype fp32
 ```
 
 ---
