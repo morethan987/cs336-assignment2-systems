@@ -418,16 +418,65 @@ print(s)
 
   *Deliverable*: The data types for each of the components listed above.
 
-  #response[Model parameters keeps FP32 since the autocasting only applied when operations are launched to GPU.]
+  #response[
+    Model parameters keeps FP32 since the autocasting only applied when operations are launched to GPU. `ToyModel.fc1` yields FP16, `ToyModel.ln` yields FP32. Model's predicted logits is FP16. The loss is FP32. The gradients are all FP32.
+  ]
 
 + You should have seen that FP16 mixed precision autocasting treats the layer normalization layer differently than the feed-forward layers. What parts of layer normalization are sensitive to mixed precision? If we use BF16 instead of FP16, do we still need to treat layer normalization differently? Why or why not?
 
   *Deliverable*: A 2-3 sentence response.
 
-  #response[]
+  #response[
+    The squaring operation is sensitive to FP16 for overflowing. The accumulation sum is sensitive to BF16 due to truncation error. Actually, PyTorch does cast layer normalization to FP32 even using BF16. Though the error caused by BF16 is relatively small than FP16, there is still a notable error when applying reduction on large dimensions.
+
+    ```txt
+    --- 1. FP16 Sensitivity: Squaring and Overflow ---
+    Input feature value: 300.0
+    FP16 direct squaring (x^2): inf  <-- (FP16 max is 65504, overflows to inf!)
+    Upcast to FP32 squaring (x^2): 90000.0 <-- (Normal value)
+
+    --- 2. BF16 Sensitivity: Accumulation and Truncation Error (Precision Loss) ---
+    Hidden Dimension d = 4096
+    FP64 Ground Truth variance:    1.025929
+    Pure BF16 accumulation:        1.023438 | Relative error: 0.2429%
+    Upcast to FP32 accumulation:   1.025927 | Relative error: 0.0002%
+    ```
+  ]
 
 + Modify your benchmarking script to optionally run the model using mixed precision with BF16. Time the forward and backward passes with and without mixed-precision for each language model size described in @model-specs. Compare the results of using full precision versus mixed precision, and comment on any trends as model size changes. You may find the nullcontext no-op context manager to be useful.
 
   *Deliverable*: A 2-3 sentence response with your timings and commentary.
 
-  #response[]
+  #response[
+    An RTX 4090 can only handle up to the `medium`-sized model, but it is sufficient to draw some key conclusions. First, autocasting is not free and actually increases forward pass latency, which negatively impacts the small model. The real benefit of autocasting comes from the backward pass and larger model sizes. Backward pass and larger model contain more FLOPs and heavier memory access which is signigicantly affected by data precision.
+
+    #figure(
+      table(
+        columns: (auto, auto, auto, auto, auto),
+        inset: (x: 8pt, y: 5pt),
+        align: (left, center, center, center, center),
+        stroke: none,
+
+        // top line
+        table.hline(stroke: 1.2pt),
+        table.header(
+          table.cell(rowspan: 2, align: horizon + left)[*Stage*],
+          table.cell(colspan: 2, align: center)[*Small (ms)*],
+          table.cell(colspan: 2, align: center)[*Medium (ms)*],
+          table.hline(start: 1, end: 5, stroke: 0.5pt),
+          [Full], [Mixed], [Full], [Mixed],
+        ),
+
+        // header split
+        table.hline(stroke: 0.6pt),
+        [Forward], [29.85 ± 3.32], [41.83 ± 6.38], [84.58 ± 0.16], [67.47 ± 12.85],
+        [Backward], [63.07 ± 0.18], [45.69 ± 2.77], [179.06 ± 0.35], [100.52 ± 0.80],
+        table.hline(stroke: 0.3pt),
+        [*Total*], [*98.82 ± 3.35*], [*93.51 ± 8.16*], [*282.13 ± 0.46*], [*186.60 ± 13.27*],
+
+        // bottom
+        table.hline(stroke: 1.2pt),
+      ),
+      caption: [Latency comparison between full and mixed precision],
+    )
+  ]
