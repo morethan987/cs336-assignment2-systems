@@ -8,15 +8,22 @@ import numpy as np
 import pandas as pd
 import torch
 
-from cs336_systems.observers.base import TRAIN_STAGES, BaseObserver
-from cs336_systems.utils import export_typst
+from cs336_systems.observers.base import INFER_STAGES, TRAIN_STAGES, BaseObserver
+from cs336_systems.utils import Mode, export_typst
 
 
 class TimingObserver(BaseObserver):
-    def __init__(self, device: torch.device, unit_ms: bool = True):
+    def __init__(self, mode: Mode, device: torch.device, unit_ms: bool = True):
+        self.mode = mode
         self.device = device
         self.unit_ms = unit_ms
         self.is_measuring = False
+
+        match self.mode:
+            case Mode.TRAIN:
+                self.stages = TRAIN_STAGES
+            case Mode.INFER:
+                self.stages = INFER_STAGES
 
         self.records: list[list[float]] = []
         self._current_step_times: dict[str, float] = {}
@@ -33,7 +40,7 @@ class TimingObserver(BaseObserver):
 
     def on_step_end(self, step: int) -> None:
         if self.is_measuring:
-            step_record = [self._current_step_times.get(stage, 0.0) for stage in TRAIN_STAGES]
+            step_record = [self._current_step_times.get(stage, 0.0) for stage in self.stages]
             self.records.append(step_record)
 
     def _sync(self):
@@ -66,7 +73,7 @@ class TimingObserver(BaseObserver):
         total_mean = mean.sum()
         total_std = res.sum(axis=1).std()
 
-        stages = list(TRAIN_STAGES) + ["total"]
+        stages = list(self.stages) + ["total"]
         means = np.append(mean, total_mean)
         stds = np.append(std, total_std)
 
@@ -97,7 +104,7 @@ class TimingObserver(BaseObserver):
         print(f"{'Stage':<{col_w_stage}} | {f'Mean ({unit})':<{col_w_data}} | {f'Std ({unit})':<{col_w_data}}")
         print("-" * total_width)
 
-        for stage in TRAIN_STAGES:
+        for stage in self.stages:
             m_val = df.loc[stage, "mean"]
             s_val = df.loc[stage, "std"]
             print(f"{stage.capitalize():<{col_w_stage}} | {m_val:>10.3f} {unit} | {s_val:>10.3f} {unit}")

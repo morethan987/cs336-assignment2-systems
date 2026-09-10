@@ -1,4 +1,5 @@
 import argparse
+import enum
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -60,9 +61,18 @@ MODEL_SIZES = {
 }
 
 
+class Mode(enum.StrEnum):
+    TRAIN = "train"
+    INFER = "infer"
+
+    def __str__(self):
+        return self.value
+
+
 @dataclass
 class BenchConfig:
     res_dir: Path
+    mode: Mode
     profilers: list[str]
     steps: int
     warm_up: int
@@ -97,6 +107,7 @@ def parse_args() -> tuple[ModelConfig, BenchConfig]:
     # Bench
     bench_group = parser.add_argument_group("Benchmark Arguments")
     bench_group.add_argument("--res_dir", type=Path, default=Path("benchmark_res/default_name"))
+    bench_group.add_argument("--mode", type=Mode, default=Mode.TRAIN, choices=list(Mode))
     bench_group.add_argument("--profilers", type=lambda s: [item.strip() for item in s.split(",")], default=["timing"])
     bench_group.add_argument("--steps", type=int, required=True)
     bench_group.add_argument("--warm_up", type=int, required=True)
@@ -136,6 +147,7 @@ def parse_args() -> tuple[ModelConfig, BenchConfig]:
     )
     bench_cfg = BenchConfig(
         res_dir=args.res_dir,
+        mode=args.mode,
         profilers=args.profilers,
         steps=args.steps,
         warm_up=args.warm_up,

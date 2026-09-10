@@ -48,6 +48,6 @@ def create_observers(model_cfg: ModelConfig, bench_cfg: BenchConfig) -> list[Bas
     if "memory" in requested:
         observers.append(MemoryObserver())
     if "timing" in requested:
-        observers.append(TimingObserver(device=model_cfg.device, unit_ms=bench_cfg.unit_ms))
+        observers.append(TimingObserver(mode=bench_cfg.mode, device=model_cfg.device, unit_ms=bench_cfg.unit_ms))
 
     return observers

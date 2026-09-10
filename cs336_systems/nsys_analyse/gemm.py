@@ -6,7 +6,9 @@ from pathlib import Path
 
 from cs336_systems.nsys_analyse.nsys_io import (
     find_sqlite_files,
+    get_trace_mode,
     is_gemm_kernel,
+    read_experiment_metadata,
     run_nsys_report,
 )
 
@@ -46,8 +48,8 @@ def extract_forward_nvtx_gemm(sqlite_path: Path):
     return total_ms, gemm_ms, sorted_others
 
 
-def extract_train_step_full_gemm(sqlite_path: Path):
-    """Extract all GPU kernels across the entire training step (including forward, backward, and optimizer)."""
+def extract_all_gpu_kernels(sqlite_path: Path):
+    """Extract all GPU kernels across the entire profiling window via cuda_gpu_kern_sum."""
     rows = run_nsys_report("cuda_gpu_kern_sum", sqlite_path)
     if not rows:
         return None
@@ -92,82 +94,97 @@ def print_phase_block(title: str, total_ms: float, gemm_ms: float, top_others: l
 
 
 def analyze_single_sqlite(sqlite_path: Path):
-    """Analyze a single experiment: output both Forward NVTX metrics and full-step metrics."""
-    fwd_stats = extract_forward_nvtx_gemm(sqlite_path)
-    train_stats = extract_train_step_full_gemm(sqlite_path)
+    """Analyze a single trace with mode-accurate headers and metrics."""
+    _, bench_cfg = read_experiment_metadata(sqlite_path)
+    mode = get_trace_mode(sqlite_path, bench_cfg)
 
-    if not fwd_stats and not train_stats:
+    fwd_stats = extract_forward_nvtx_gemm(sqlite_path)
+    all_stats = extract_all_gpu_kernels(sqlite_path)
+
+    if not fwd_stats and not all_stats:
         return
 
     exp_name = sqlite_path.parent.name
     print("=" * 100)
-    print(f"[Experiment Name]: {exp_name}")
+    print(f"[Experiment]: {exp_name} | [Mode: {mode.upper()}]")
     print("=" * 100)
 
+    # 1. Forward pass NVTX breakdown
     if fwd_stats and fwd_stats[0] > 0:
         fwd_total, fwd_gemm, fwd_others = fwd_stats
         print_phase_block("FORWARD PASS (NVTX Filtered)", fwd_total, fwd_gemm, fwd_others)
-
-    if train_stats and train_stats[0] > 0:
-        train_total, train_gemm, train_others = train_stats
         print()
-        print_phase_block("COMPLETE RUN / TRAIN STEP (All GPU Kernels)", train_total, train_gemm, train_others)
+
+    # 2. Window-wide metrics
+    if all_stats and all_stats[0] > 0:
+        total, gemm, others = all_stats
+        if mode == "infer":
+            print_phase_block("TOTAL INFERENCE PASS (All GPU Kernels)", total, gemm, others)
+        elif mode == "train":
+            print_phase_block("COMPLETE TRAIN STEP (All GPU Kernels: Fwd + Bwd + Opt)", total, gemm, others)
+            if fwd_stats and fwd_stats[0] > 0:
+                print(f"\n  -> Full Train Step / Forward Pass Ratio: ~{total / fwd_stats[0]:.2f}x")
+        else:
+            print_phase_block("COMPLETE RUN (Unknown Mode - All GPU Kernels)", total, gemm, others)
+
     print("\n")
 
 
-def analyze_paired_legacy(root_dir: Path) -> bool:
-    """Compatibility check for paired legacy experiment directories (*_forward_only and *_train_step)."""
-    fwd_dirs = sorted(root_dir.glob("*_forward_only"))
-    if not fwd_dirs:
-        return False
+def analyze_paired_experiment(base_name: str, infer_sqlite: Path, train_sqlite: Path):
+    """Analyze a paired (infer, train) benchmark."""
+    infer_stats = extract_forward_nvtx_gemm(infer_sqlite)
+    train_stats = extract_all_gpu_kernels(train_sqlite)
 
-    has_paired = False
-    for fwd_dir in fwd_dirs:
-        base_name = fwd_dir.name.replace("_forward_only", "")
-        train_dir = root_dir / f"{base_name}_train_step"
+    if not infer_stats or not train_stats:
+        return
 
-        fwd_sqlites = find_sqlite_files(fwd_dir)
-        train_sqlites = find_sqlite_files(train_dir)
+    inf_total, inf_gemm, inf_others = infer_stats
+    trn_total, trn_gemm, trn_others = train_stats
 
-        if not fwd_sqlites or not train_sqlites:
-            continue
-
-        has_paired = True
-        fwd_stats = extract_forward_nvtx_gemm(fwd_sqlites[-1])
-        train_stats = extract_train_step_full_gemm(train_sqlites[-1])
-
-        if not fwd_stats or not train_stats:
-            continue
-
-        fwd_total, fwd_gemm, fwd_others = fwd_stats
-        train_total, train_gemm, train_others = train_stats
-
-        print("=" * 100)
-        print(f"[Paired Model Config]: {base_name}")
-        print("=" * 100)
-        print_phase_block("FORWARD ONLY (NVTX Filtered)", fwd_total, fwd_gemm, fwd_others)
-        print()
-        mult = (train_total / fwd_total) if fwd_total > 0 else 0
-        print_phase_block(f"COMPLETE TRAIN STEP (~{mult:.2f}x Forward)", train_total, train_gemm, train_others)
-        print("\n")
-
-    return has_paired
+    print("=" * 100)
+    print(f"[Paired Benchmark Group]: {base_name}")
+    print("=" * 100)
+    print_phase_block("INFERENCE / FORWARD PASS", inf_total, inf_gemm, inf_others)
+    print()
+    mult = (trn_total / inf_total) if inf_total > 0 else 0
+    print_phase_block(f"COMPLETE TRAIN STEP (~{mult:.2f}x Forward)", trn_total, trn_gemm, trn_others)
+    print("\n")
 
 
 def main():
     root_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(".")
-
-    # 1. Try to recognize paired legacy directory structures first
-    if root_dir.is_dir() and analyze_paired_legacy(root_dir):
-        return
-
-    # 2. General single-trace / recursive directory traversal
     sqlite_files = find_sqlite_files(root_dir)
+
     if not sqlite_files:
         print(f"[!] No profile.sqlite files found under {root_dir}!")
         return
 
+    groups: dict[str, dict[str, Path]] = defaultdict(dict)
+    unmatched_sqlites: list[Path] = []
+
     for sql_file in sqlite_files:
+        mode = get_trace_mode(sql_file)
+        dir_name = sql_file.parent.name
+
+        if dir_name.endswith("_train"):
+            base_name = dir_name[:-6]
+            groups[base_name]["train"] = sql_file
+        elif dir_name.endswith("_infer"):
+            base_name = dir_name[:-6]
+            groups[base_name]["infer"] = sql_file
+        elif mode in ("train", "infer"):
+            groups[dir_name][mode] = sql_file
+        else:
+            unmatched_sqlites.append(sql_file)
+
+    for base_name, modes in list(groups.items()):
+        if "train" in modes and "infer" in modes:
+            analyze_paired_experiment(base_name, modes["infer"], modes["train"])
+        else:
+            for sql_file in modes.values():
+                analyze_single_sqlite(sql_file)
+
+    for sql_file in unmatched_sqlites:
         analyze_single_sqlite(sql_file)
 
 

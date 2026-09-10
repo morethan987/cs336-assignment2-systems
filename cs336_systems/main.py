@@ -20,7 +20,7 @@ from cs336_systems.observers.base import (
     STAGE_PREPARE,
     BaseObserver,
 )
-from cs336_systems.utils import BenchConfig, parse_args
+from cs336_systems.utils import BenchConfig, Mode, parse_args
 
 
 class BenchmarkHarness:
@@ -131,6 +131,13 @@ class BenchmarkHarness:
                 stack.enter_context(obs.stage_context(stage))
             return func()
 
+    def step(self, step: int):
+        match self.bench_cfg.mode:
+            case Mode.TRAIN:
+                self.train_step(step)
+            case Mode.INFER:
+                self.infer_step(step)
+
     def train_step(self, step: int) -> None:
         for obs in self.observers:
             obs.on_step_start(step)
@@ -164,8 +171,34 @@ class BenchmarkHarness:
         for obs in self.observers:
             obs.on_step_end(step)
 
+    @torch.no_grad()
+    def infer_step(self, step: int) -> None:
+        for obs in self.observers:
+            obs.on_step_start(step)
+
+        # prepare
+        def prepare_op():
+            return self.generate_data()
+
+        x, targets = self._run_stage(STAGE_PREPARE, prepare_op)
+
+        # forward
+        def forward_op():
+            with self.autocast_context:
+                logits = self.model(x)
+                cross_entropy(logits, targets)
+
+        self._run_stage(STAGE_FORWARD, forward_op)
+
+        for obs in self.observers:
+            obs.on_step_end(step)
+
     def run(self) -> None:
-        self.model.train()
+        match self.bench_cfg.mode:
+            case Mode.TRAIN:
+                self.model.train()
+            case Mode.INFER:
+                self.model.eval()
 
         current_phase = "init"
         current_step = 0
@@ -177,7 +210,7 @@ class BenchmarkHarness:
                 print(f"--> Warm-up steps: {self.bench_cfg.warm_up}")
                 for step in tqdm(range(1, self.bench_cfg.warm_up + 1), desc="warm-up", dynamic_ncols=True):
                     current_step = step
-                    self.train_step(step)
+                    self.step(step)
 
             if self.model_cfg.device.type == "cuda":
                 torch.cuda.synchronize()
@@ -193,7 +226,7 @@ class BenchmarkHarness:
             # 3. Measurement Loop
             for step in tqdm(range(1, self.bench_cfg.steps + 1), desc="benchmarking", dynamic_ncols=True):
                 current_step = step
-                self.train_step(step)
+                self.step(step)
 
             if self.model_cfg.device.type == "cuda":
                 torch.cuda.synchronize()

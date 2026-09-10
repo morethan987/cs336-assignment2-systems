@@ -52,6 +52,20 @@ def read_experiment_metadata(sqlite_path: Path) -> tuple[dict[str, Any], dict[st
         return {}, {}
 
 
+def get_trace_mode(sqlite_path: Path, bench_cfg: dict[str, Any] | None = None) -> str:
+    """
+    Read and return normalized mode ('train', 'infer', or 'unknown').
+    Can either use an existing bench_cfg dict or read args.json directly.
+    """
+    if bench_cfg is None:
+        _, bench_cfg = read_experiment_metadata(sqlite_path)
+
+    mode = bench_cfg.get("mode")
+    if mode is not None:
+        return str(mode).lower()
+    return "unknown"
+
+
 def run_nsys_report(report_name: str, sqlite_path: Path) -> list[dict[str, str]]:
     """Run `nsys stats -r <report_name>` and parse output directly as a CSV dictionary list."""
     cmd = [
