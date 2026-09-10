@@ -63,3 +63,20 @@ To submit, run `./test_and_make_submission.sh` . This script will install your
 code's dependencies, run tests, and create a gzipped tarball with the output. We
 should be able to unzip your submitted tarball and run
 `./test_and_make_submission.sh` to verify your test results.
+
+## Commmands
+
+Here are some typical commands for run benchmarking.
+
+```sh
+OUT_DIR="profiles/medium_ctx512_att_insight/$(date +'%Y%m%d_%H%M%S')" && mkdir -p "$OUT_DIR" && uv run nsys profile \
+  -o "$OUT_DIR/profile" \
+  --capture-range=cudaProfilerApi \
+  --capture-range-end=stop \
+  --trace=cuda,cudnn,cublas,nvtx \
+  --cuda-memory-usage=true \
+  --export sqlite \
+  --stats=true \
+  --force-overwrite=true \
+  -- python cs336_systems/main.py --profilers nsys --warm_up 5 --steps 5 --context_length 512 --res_dir "$OUT_DIR" --patches att,recompute:group_size=4
+```
