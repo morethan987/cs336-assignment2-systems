@@ -1,6 +1,6 @@
 Tasks:
 
-- [ ] Run toy model
+- [x] Run toy model
 
 ```sh
 uv run cs336_systems/chore/toy.py
@@ -10,7 +10,7 @@ uv run cs336_systems/chore/toy.py
 
 Tasks:
 
-- [ ] time cost comparation.
+- [x] time cost comparation.
 
 ```sh
 uv run cs336_systems/main.py --profilers timing \
@@ -33,7 +33,7 @@ uv run cs336_systems/main.py --profilers timing \
 
 Tasks:
 
-- [ ] Remove backward and optimizer step from nsys benchmarking to check whether stand alone froward differs from complete traning loop.
+- [x] Remove backward and optimizer step from nsys benchmarking to check whether stand alone froward differs from complete traning loop.
 
 ```sh
 OUT_DIR="profiles/medium_ctx512_forward_only/$(date +'%Y%m%d_%H%M%S')" && mkdir -p "$OUT_DIR" && uv run nsys profile \
@@ -50,7 +50,7 @@ OUT_DIR="profiles/medium_ctx512_forward_only/$(date +'%Y%m%d_%H%M%S')" && mkdir 
 
 Expects:
 
-- [ ] With less nsys injection, the forward pass may become a little bit faster but no notable difference.
+- [x] With less nsys injection, the forward pass may become a little bit faster but no notable difference.
 
 Comment:
 
@@ -60,7 +60,7 @@ Comment:
 
 Tasks:
 
-- [ ] Warp the whole traning step only.
+- [x] Warp the whole traning step only.
 
 ```sh
 OUT_DIR="profiles/medium_ctx512_train_step/$(date +'%Y%m%d_%H%M%S')" && mkdir -p "$OUT_DIR" && uv run nsys profile \
@@ -77,13 +77,13 @@ OUT_DIR="profiles/medium_ctx512_train_step/$(date +'%Y%m%d_%H%M%S')" && mkdir -p
 
 Expects:
 
-- [ ] Get a comverged data instead of add data from different nvtx range.
+- [x] Get a comverged data instead of add data from different nvtx range.
 
 ---
 
 Tasks:
 
-- [ ] Attention insight.
+- [x] Attention insight.
 
 ```sh
 OUT_DIR="profiles/medium_ctx512_att_insight/$(date +'%Y%m%d_%H%M%S')" && mkdir -p "$OUT_DIR" && uv run nsys profile \
@@ -100,7 +100,7 @@ OUT_DIR="profiles/medium_ctx512_att_insight/$(date +'%Y%m%d_%H%M%S')" && mkdir -
 
 Expects:
 
-- [ ] Get a resonable time costs attribution.
+- [x] Get a resonable time costs attribution.
 
 Comment:
 
