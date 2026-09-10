@@ -3,13 +3,12 @@ import enum
 from dataclasses import dataclass
 from pathlib import Path
 
-import einx
 import pandas as pd
 import torch
-from cs336_basics.layers import softmax
 from cs336_basics.train_loop import ModelConfig
 from cs336_basics.train_loop.utils import parse_dtype
-from torch.cuda import nvtx
+
+from cs336_systems.patch import PatchSpec, parse_patch_spec
 
 
 def export_typst(
@@ -34,24 +33,6 @@ def export_typst(
     return typst_code
 
 
-def annotated_scaled_dot_product_attention(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
-    d_k = torch.tensor(Q.shape[-1])
-
-    with nvtx.range("computing attention scores"):
-        # n and m all respresent seq_len, only to tag matrix shape: (n, m) or (m, n)
-        scaled_dot = torch.multiply(torch.rsqrt(d_k), einx.dot("... n [d_k], ... m [d_k] -> ... n m", Q, K))
-
-    if mask is not None:
-        scaled_dot = scaled_dot.masked_fill(~mask, float("-inf"))
-
-    with nvtx.range("computing softmax"):
-        sftmx = softmax(scaled_dot, -1)
-
-    with nvtx.range("final matmul"):
-        res = einx.dot("... n [m], ... [m] d_v -> ... n d_v", sftmx, V)
-    return res
-
-
 MODEL_SIZES = {
     "small": {"d_model": 768, "d_ff": 3072, "num_layers": 12, "num_heads": 12},
     "medium": {"d_model": 1024, "d_ff": 4096, "num_layers": 24, "num_heads": 16},
@@ -74,11 +55,11 @@ class BenchConfig:
     res_dir: Path
     mode: Mode
     profilers: list[str]
+    patches: list[PatchSpec]
     steps: int
     warm_up: int
     unit_ms: bool
     use_mixed_precision: bool
-    att_patch: bool
     batch_size: int
     lr: float
     weight_decay: float
@@ -112,7 +93,7 @@ def parse_args() -> tuple[ModelConfig, BenchConfig]:
     bench_group.add_argument("--steps", type=int, required=True)
     bench_group.add_argument("--warm_up", type=int, required=True)
     bench_group.add_argument("--use_mixed_precision", action="store_true", default=False)
-    bench_group.add_argument("--att_patch", action="store_true", default=False)
+    bench_group.add_argument("--patches", type=parse_patch_spec, default=[])
     bench_group.add_argument("--no_unit_ms", dest="unit_ms", action="store_false", default=True)
     bench_group.add_argument("--batch_size", type=int, default=4)
     bench_group.add_argument("--lr", type=float, default=1.5e-3)
@@ -149,11 +130,11 @@ def parse_args() -> tuple[ModelConfig, BenchConfig]:
         res_dir=args.res_dir,
         mode=args.mode,
         profilers=args.profilers,
+        patches=args.patches,
         steps=args.steps,
         warm_up=args.warm_up,
         unit_ms=args.unit_ms,
         use_mixed_precision=args.use_mixed_precision,
-        att_patch=args.att_patch,
         batch_size=args.batch_size,
         lr=args.lr,
         weight_decay=args.weight_decay,

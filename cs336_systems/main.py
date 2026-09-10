@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import enum
 import json
 import traceback
 from collections.abc import Callable
@@ -20,6 +21,7 @@ from cs336_systems.observers.base import (
     STAGE_PREPARE,
     BaseObserver,
 )
+from cs336_systems.patch import PATCH_REGISTRY
 from cs336_systems.utils import BenchConfig, Mode, parse_args
 
 
@@ -62,15 +64,13 @@ class BenchmarkHarness:
         self.observers: list[BaseObserver] = create_observers(self.model_cfg, self.bench_cfg)
 
     def _monkey_patch(self):
-        if self.bench_cfg.att_patch:
-            import cs336_basics.layers.multihead_self_attention as _mha
+        for patch_spec in self.bench_cfg.patches:
+            patch_fn = PATCH_REGISTRY.get(patch_spec.name)
+            if patch_fn is None:
+                raise ValueError(f"Unknown patch: {patch_spec.name}")
 
-            from cs336_systems.utils import annotated_scaled_dot_product_attention
-
-            if hasattr(_mha, "scaled_dot_product_attention"):
-                _mha.scaled_dot_product_attention = annotated_scaled_dot_product_attention  # type: ignore
-            else:
-                raise AttributeError("scaled_dot_product_attention not found")
+            print(f"--> Applying patch: {patch_spec.name} with kwargs: {patch_spec.kwargs}")
+            patch_fn(**patch_spec.kwargs)
 
     def _set_seed(self):
         torch.manual_seed(self.bench_cfg.torch_seed)
@@ -84,6 +84,8 @@ class BenchmarkHarness:
             def serialize(obj):
                 if isinstance(obj, (torch.device, torch.dtype, Path)):
                     return str(obj)
+                if isinstance(obj, enum.Enum):
+                    return obj.value
                 raise TypeError(f"Type {type(obj)} not serializable")
 
             json.dump({"model_cfg": asdict(self.model_cfg), "bench_cfg": asdict(self.bench_cfg)}, f, indent=4, default=serialize)
