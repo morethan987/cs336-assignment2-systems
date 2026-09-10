@@ -19,19 +19,27 @@ class NsysObserver(BaseObserver):
     """
 
     def __init__(self) -> None:
-        self._current_step_msg = ""
+        self._emit_nvtx_ctx: torch.autograd.profiler.emit_nvtx | None = None
 
     def on_window_start(self) -> None:
         if torch.cuda.is_available():
             torch.cuda.synchronize()
+
+            # autograd nvtx
+            self._emit_nvtx_ctx = torch.autograd.profiler.emit_nvtx(record_shapes=True)
+            self._emit_nvtx_ctx.__enter__()
+
             torch.cuda.cudart().cudaProfilerStart()
-            print("[NsysObserver] CUDA Profiler started.")
+            print("[NsysObserver] CUDA Profiler started & PyTorch native emit_nvtx started.")
 
     def on_window_end(self) -> None:
         if torch.cuda.is_available():
             torch.cuda.synchronize()
             torch.cuda.cudart().cudaProfilerStop()
-            print("[NsysObserver] CUDA Profiler stopped.")
+            if self._emit_nvtx_ctx is not None:
+                self._emit_nvtx_ctx.__exit__(None, None, None)
+                self._emit_nvtx_ctx = None
+            print("[NsysObserver] CUDA Profiler stopped & PyTorch emit_nvtx stopped.")
 
     def on_step_start(self, step: int) -> None:
         nvtx.range_push(f"step_{step}")
