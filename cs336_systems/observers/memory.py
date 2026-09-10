@@ -13,7 +13,7 @@ class MemoryObserver(BaseObserver):
     visualizable via https://pytorch.org/memory_viz.
     """
 
-    def __init__(self, max_entries: int = 100_000):
+    def __init__(self, max_entries: int = 1_000_000):
         self.max_entries = max_entries
 
     def on_window_start(self) -> None:
