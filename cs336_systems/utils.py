@@ -41,6 +41,8 @@ MODEL_SIZES = {
     "10b": {"d_model": 4608, "d_ff": 12288, "num_layers": 50, "num_heads": 36},
 }
 
+MODEL_NAMES = {v["d_model"]: k for k, v in MODEL_SIZES.items()}
+
 
 class Mode(enum.StrEnum):
     TRAIN = "train"

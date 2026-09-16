@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import csv
 import json
+import sqlite3
 import subprocess
 from pathlib import Path
 from typing import Any
+
+import pandas as pd
 
 GEMM_KEYWORDS = (
     "gemm",
@@ -99,3 +102,46 @@ def run_nsys_report(report_name: str, sqlite_path: Path) -> list[dict[str, str]]
         return []
 
     return list(csv.DictReader(lines[header_idx:]))
+
+
+def get_sqlite_connection(sqlite_path: Path) -> sqlite3.Connection:
+    """Create a read-only SQLite connection URI."""
+    return sqlite3.connect(f"file:{sqlite_path.resolve()}?mode=ro", uri=True)
+
+
+def load_memory_events(sqlite_path: Path) -> pd.DataFrame:
+    """Load GPU memory allocation and free events (memKind=2: Device memory)."""
+    query = """
+    SELECT 
+        start, 
+        bytes, 
+        memoryOperationType, 
+        address,
+        CASE WHEN memoryOperationType = 0 THEN bytes ELSE -bytes END AS delta
+    FROM CUDA_GPU_MEMORY_USAGE_EVENTS
+    WHERE memKind = 2
+    ORDER BY start ASC;
+    """
+    with get_sqlite_connection(sqlite_path) as conn:
+        try:
+            return pd.read_sql_query(query, conn)
+        except (sqlite3.Error, pd.errors.DatabaseError) as e:
+            print(f"[Warning] Failed to load memory events from {sqlite_path}: {e}")
+            return pd.DataFrame(columns=["start", "bytes", "memoryOperationType", "address", "delta"])
+
+
+def load_nvtx_events(sqlite_path: Path) -> pd.DataFrame:
+    """Load NVTX range push/pop events (eventType=59) and resolve StringIds."""
+    query = """
+    SELECT e.start, e.end, COALESCE(e.text, s.value) AS name
+    FROM NVTX_EVENTS e
+    LEFT JOIN StringIds s ON e.textId = s.id
+    WHERE e.eventType = 59 AND COALESCE(e.text, s.value) IS NOT NULL
+    ORDER BY e.start ASC;
+    """
+    with get_sqlite_connection(sqlite_path) as conn:
+        try:
+            return pd.read_sql_query(query, conn)
+        except (sqlite3.Error, pd.errors.DatabaseError) as e:
+            print(f"[Warning] Failed to load NVTX events from {sqlite_path}: {e}")
+            return pd.DataFrame(columns=["start", "end", "name"])
