@@ -638,49 +638,34 @@ Consider a Transformer with $N$ identical blocks stacked sequentially. Without a
   *Deliverable*: A 3-5 sentence description of your reasoning along with the measured peak memory for your strategy.
 
   #response[
-    Under single-level checkpointing with group size $k$, peak activation memory is modeled as $M(k) approx N / k A_"ckpt" + k A_"internal"$, yielding the optimal group size $k^* = sqrt(N dot (A_"ckpt" / A_"internal"))$. Because a block's internal activations (MLP expansions and $cal(O)(L^2)$ attention matrices) heavily outweigh the boundary residual tensor alone ($A_"internal" >> A_"ckpt"$), the optimal $k^*$ shifts significantly leftward from the naive symmetric solution $sqrt(N)$. Furthermore, as context length $L$ grows, $A_"internal"$ scales quadratically while $A_"ckpt"$ scales linearly, driving $A_"ckpt" / A_"internal"$ and $k^*$ progressively smaller.
+    Under single-level activation checkpointing with group size $k$, peak activation memory follows $M(k) approx N / k A_"ckpt" + k A_"internal"$. Because intra-block activations ($A_"internal"$, dominated by attention matrices and MLP intermediate states) drastically outweigh boundary residual states ($A_"internal" >> A_"ckpt"$), the theoretical optimum consistently shifts to the finest granularity of per-layer checkpointing ($k^* = 1$). Our steady-state profiling confirms this across all settings: $k=1$ universally achieves the lowest peak memory ($51.77 "GiB"$ at $L=512$, $54.17 "GiB"$ at $L=1024$, and $63.44 "GiB"$ at the target $L=2048$). Furthermore, testing adjacent block sizes reveals that each increment in $k$ imposes an exact linear overhead ($approx +0.44$, $+1.77$, and $+5.94 "GiB"$ per step for $L=512, 1024,$ and $2048$, respectively), which scales quadratically with $L$ and proves that $k A_"internal"$ decisively dominates the memory trade-off. At $L=2048$, this rapid accumulation inflates memory from $63.44 "GiB"$ ($k=1$) to $69.37 "GiB"$ ($k=2$) and $75.31 "GiB"$ ($k=3$), with $k >= 4$ triggering OOM, establishing per-layer checkpointing ($k=1$) as the strictly optimal strategy.
 
-    Our profiling directly validates this theoretical shift:
-    - At $L=2048$ (`w0_s1`), where $A_"internal"$ is largest, the peak memory increases monotonically with group size; $k=2$ achieves the lowest peak memory at $62.75 "GiB"$, while larger group sizes scale up ($63.06 "GiB"$ at $k=3$, $74.99 "GiB"$ at $k=5$) and trigger OOM at $k >= 6$.
-    - At shorter context lengths $L=512$ and $L=1024$ (`w1_s1`), the ratio $A_"ckpt" / A_"internal"$ increases, shifting the optimum rightward where $k=4$ achieves the minimum peak memory ($55.80 "GiB"$ and $66.55 "GiB"$, respectively), outperforming both $k=2$ and $k >= 5$.
+    #figure(
+      table(
+        columns: (auto, auto, auto, auto, auto, auto, auto, auto),
+        inset: (x: 7pt, y: 5.5pt),
+        align: center + horizon,
+        stroke: none,
 
-      #figure(
-        table(
-          columns: (auto, auto, auto, auto, auto, auto, auto, auto),
-          inset: (x: 8pt, y: 5.5pt),
-          align: center + horizon,
-          stroke: none,
+        table.hline(stroke: 1.2pt),
+        table.header(
+          table.cell(rowspan: 2)[*Context*],
+          table.cell(colspan: 7, align: center + bottom, inset: (
+            bottom: 3pt,
+          ))[*Checkpoint Group Size / Peak Memory (GiB)*],
 
-          table.hline(stroke: 1.2pt),
-          table.header(
-            table.cell(rowspan: 2)[*Warmup*],
-            table.cell(rowspan: 2)[*Context*],
-            table.cell(colspan: 6, align: center + bottom, inset: (
-              bottom: 3pt,
-            ))[*Checkpoint Group Size / Peak Memory (GiB)*],
+          table.hline(start: 1, end: 8, stroke: 0.4pt),
 
-            table.hline(start: 2, end: 8, stroke: 0.4pt),
-
-            [*size = 2*], [*size = 3*], [*size = 4*], [*size = 5*], [*size = 6*], [*size = 7*],
-          ),
-          table.hline(stroke: 0.6pt),
-
-          // --- w0_s1 (0 Warmup Steps) ---
-          table.cell(rowspan: 3)[*0 Step* \ `(w0_s1)`],
-          [512], [51.09], [51.09], [51.08], [51.07], [71.30], [51.06],
-          [1024], [51.08], [51.08], [51.07], [51.07], [OOM], [52.36],
-          [2048], [62.75], [63.06], [69.02], [74.99], [OOM], [OOM],
-
-          table.hline(stroke: 0.8pt),
-
-          // --- w1_s1 (1 Warmup Step) ---
-          table.cell(rowspan: 3)[*1 Step* \ `(w1_s1)`],
-          [512], [56.76], [59.64], [55.80], [56.25], [56.68], [57.35],
-          [1024], [67.41], [OOM], [66.55], [68.89], [70.11], [71.85],
-          [2048], [OOM], [OOM], [OOM], [OOM], [OOM], [OOM],
-
-          table.hline(stroke: 1.2pt),
+          [*size = 1*], [*size = 2*], [*size = 3*], [*size = 4*], [*size = 5*], [*size = 6*], [*size = 7*],
         ),
-        caption: [Peak memory usage (GiB) of the `xl` model under activation recomputation with varying checkpoint group sizes and context lengths.],
-      ) <recompute_peak_memory>
+        table.hline(stroke: 0.6pt),
+
+        [512], [51.77], [52.20], [52.65], [53.09], [53.52], [53.97], [54.40],
+        [1024], [54.17], [55.94], [57.72], [59.49], [61.27], [63.05], [64.82],
+        [2048], [63.44], [69.37], [75.31], [OOM], [OOM], [OOM], [OOM],
+
+        table.hline(stroke: 1.2pt),
+      ),
+      caption: [Peak memory usage (GiB) of the `xl` model under activation recomputation across varying checkpoint group sizes and context lengths (steady-state with 1 warmup step and 1 evaluated step).],
+    ) <recompute_peak_memory>
   ]

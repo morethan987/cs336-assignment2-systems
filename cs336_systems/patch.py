@@ -109,30 +109,6 @@ def att_patch():
     _mha.scaled_dot_product_attention = _annotated_scaled_dot_product_attention  # type: ignore
 
 
-def _patch_einx_for_recompute():
-    """
-    Patch einx to prevent it from intercepting and wrapping PyTorch's
-    internal `_StopRecomputationError` into a `CallOperationError`.
-    """
-    try:
-        import einx._src.frontend.api as einx_api
-        import einx.errors
-
-        orig_create = einx.errors.CallOperationError.create
-
-        def patched_create(exception: BaseException, *args: Any, **kwargs: Any) -> Any:
-            if exception.__class__.__name__ == "_StopRecomputationError":
-                raise exception
-            return orig_create(exception, *args, **kwargs)
-
-        setattr(einx.errors.CallOperationError, "create", staticmethod(patched_create))  # noqa: B010
-        if hasattr(einx_api, "CallOperationError"):
-            setattr(einx_api.CallOperationError, "create", staticmethod(patched_create))  # noqa: B010
-
-    except (ImportError, AttributeError):
-        return
-
-
 def _run_block_chunk(blocks: nn.ModuleList, x: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
     for block in blocks:
         x: torch.Tensor = block(x, positions)
@@ -153,8 +129,6 @@ def recompute_patch(group_size: int = 2):
 
     if not hasattr(_tlm, "TransformerLM"):
         raise AttributeError("TransformerLM not found in cs336_basics.layers.transformer_lm")
-
-    _patch_einx_for_recompute()
 
     def _checkpointed_forward(
         self: _tlm.TransformerLM,
@@ -179,6 +153,7 @@ def recompute_patch(group_size: int = 2):
                 x,
                 token_positions,
                 use_reentrant=False,
+                early_stop=False,
             )
 
         x = self.output_rms(x)
