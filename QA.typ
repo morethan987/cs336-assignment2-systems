@@ -6,7 +6,7 @@
   authors: "Morethan",
   date: datetime(year: 2026, month: 09, day: 04),
   abstract: [Language Modeling from Scratch - Systems and Parallelism],
-  bibliography: bibliography("refs.bib"),
+  bibliography: none,
   figure-index: (enabled: false),
   table-index: (enabled: false),
   listing-index: (enabled: false),
@@ -535,25 +535,25 @@ _*Length of 2048 on `xl` model is out of the capacity of RTX PRO 6000 with 84 Gi
 
         table.cell(rowspan: 6)[*Large*],
         table.cell(rowspan: 3)[Infer],
-        [128], [0.06], [1.84], [+3113.3%],
-        [512], [0.28], [2.01], [+607.8%],
-        [1024], [1.04], [2.75], [+164.6%],
+        [128], [3.78], [5.56], [+47.09%],
+        [512], [4.01], [5.74], [+43.14%],
+        [1024], [4.77], [6.48], [+35.85%],
         table.hline(start: 1, stroke: 0.3pt),
         table.cell(rowspan: 3)[Train],
-        [128], [3.66], [3.94], [+7.6%],
-        [512], [16.57], [13.54], [-18.3%],
-        [1024], [44.63], [34.38], [-23.0%],
+        [128], [14.94], [15.21], [+1.81%],
+        [512], [27.53], [24.55], [-10.82%],
+        [1024], [55.59], [45.35], [-18.42%],
 
         table.hline(stroke: 0.8pt),
 
         table.cell(rowspan: 4)[*XL*],
         table.cell(rowspan: 2)[Infer],
-        [128], [0.10], [6.35], [+6097.4%],
-        [512], [0.47], [6.56], [+1283.3%],
+        [128], [12.93], [19.18], [+48.34%],
+        [512], [13.30], [19.38], [+45.71%],
         table.hline(start: 1, stroke: 0.3pt),
         table.cell(rowspan: 2)[Train],
-        [128], [12.79], [12.79], [-0.0%],
-        [512], [27.27], [25.68], [-5.9%],
+        [128], [51.13], [51.10], [-0.06%],
+        [512], [65.50], [63.90], [-2.44%],
 
         table.hline(stroke: 1.2pt),
       ),
@@ -566,7 +566,7 @@ _*Length of 2048 on `xl` model is out of the capacity of RTX PRO 6000 with 84 Gi
   *Deliverable*: A 2-3 sentence response.
 
   #response[
-    Yes, mixed-precision significantly affects peak memory usage, but its effect depends on the workload. As shown in @peak_memory, memory increases drastically during inference because PyTorch's autocast dynamically caches an additional low-precision (BF16) copy of the model weights. Conversely, memory savings only materialize during training at sufficiently long context lengths, where reduced activation memory outweighs the weight casting overhead.
+    For the `xl` model with mixed-precision, the peak forward pass memory is 19.18 GiB (ctx=128) and 19.38 GiB (ctx=512), while a full training step reaches 51.10 GiB (ctx=128) and 63.90 GiB (ctx=512). Mixed-precision significantly affects inference by increasing memory by 46–48% due to PyTorch dynamically caching an additional BF16 copy of the model weights. However, its effect during training is negligible for shorter contexts (-0.06% to -2.44%) because the large static memory footprint of optimizer states and FP32 master weights heavily dominates over activation savings.
   ]
 
 + Consider the `xl` model. Given our reference hyperparameters, what is the size of a tensor of activations in the Transformer residual stream, in single-precision? Give this size in MiB (i.e., divide the number of bytes by $1024^2$ ).
@@ -617,10 +617,70 @@ Consider a Transformer with $N$ identical blocks stacked sequentially. Without a
 
   *Deliverable*: A 3-5 sentence description of the strategy and its asymptotic peak memory, plus a short code sketch.
 
-  #response[]
+  #response[
+    To minimize peak activation memory ignoring compute cost, we apply recursive binary checkpointing ($b=2$). Distinguishing between the forward boundary tensor $A_"ckpt"$ and a single block's internal recomputation activation $A_"internal"$, the active memory along a depth-$L$ tree is $M(b) = (b - 1) / (ln b) ln(N) A_"ckpt" + A_"internal"$. Because recursive checkpointing can subdivide all the way down to a single leaf block, $A_"internal"$ enters purely as an additive constant independent of $b$; since $f(b) = (b - 1) / (ln b)$ is strictly increasing for $b >= 2$, binary splitting ($b=2$) strictly minimizes peak memory regardless of the $A_"ckpt" / A_"internal"$ ratio. This achieves an asymptotic peak memory of $cal(O)(log N)$ with $cal(O)(N log N)$ compute. In the extreme unconstrained-compute limit, recomputing each block directly from the initial input $x_0$ yields $cal(O)(1)$ memory at $cal(O)(N^2)$ compute.
+
+    ```python
+    def recursive_checkpoint(layers, x):
+        if len(layers) == 1:
+            return layers[0](x)
+        mid = len(layers) // 2
+        # Checkpoint midpoint; inner segment is recursively checkpointed during backward
+        x_mid = torch.utils.checkpoint.checkpoint(
+            lambda y: recursive_checkpoint(layers[:mid], y), x, use_reentrant=False
+        )
+        return recursive_checkpoint(layers[mid:], x_mid)
+    ```
+  ]
 
 + Consider the `xl` model config with batch size 4 and sequence length 2048 as above. If you only have the time/compute budget to run one step of recomputation (meaning you may not nest checkpoint calls), what is the best checkpointing strategy to reduce peak memory? Profile your run's peak memory to validate your hypothesis. Compare the peak memory of the next smaller and larger checkpointing block sizes to be sure.
 
   *Deliverable*: A 3-5 sentence description of your reasoning along with the measured peak memory for your strategy.
 
-  #response[]
+  #response[
+    Under single-level checkpointing with group size $k$, peak activation memory is modeled as $M(k) approx N / k A_"ckpt" + k A_"internal"$, yielding the optimal group size $k^* = sqrt(N dot (A_"ckpt" / A_"internal"))$. Because a block's internal activations (MLP expansions and $cal(O)(L^2)$ attention matrices) heavily outweigh the boundary residual tensor alone ($A_"internal" >> A_"ckpt"$), the optimal $k^*$ shifts significantly leftward from the naive symmetric solution $sqrt(N)$. Furthermore, as context length $L$ grows, $A_"internal"$ scales quadratically while $A_"ckpt"$ scales linearly, driving $A_"ckpt" / A_"internal"$ and $k^*$ progressively smaller.
+
+    Our profiling directly validates this theoretical shift:
+    - At $L=2048$ (`w0_s1`), where $A_"internal"$ is largest, the peak memory increases monotonically with group size; $k=2$ achieves the lowest peak memory at $62.75 "GiB"$, while larger group sizes scale up ($63.06 "GiB"$ at $k=3$, $74.99 "GiB"$ at $k=5$) and trigger OOM at $k >= 6$.
+    - At shorter context lengths $L=512$ and $L=1024$ (`w1_s1`), the ratio $A_"ckpt" / A_"internal"$ increases, shifting the optimum rightward where $k=4$ achieves the minimum peak memory ($55.80 "GiB"$ and $66.55 "GiB"$, respectively), outperforming both $k=2$ and $k >= 5$.
+
+      #figure(
+        table(
+          columns: (auto, auto, auto, auto, auto, auto, auto, auto),
+          inset: (x: 8pt, y: 5.5pt),
+          align: center + horizon,
+          stroke: none,
+
+          table.hline(stroke: 1.2pt),
+          table.header(
+            table.cell(rowspan: 2)[*Warmup*],
+            table.cell(rowspan: 2)[*Context*],
+            table.cell(colspan: 6, align: center + bottom, inset: (
+              bottom: 3pt,
+            ))[*Checkpoint Group Size / Peak Memory (GiB)*],
+
+            table.hline(start: 2, end: 8, stroke: 0.4pt),
+
+            [*size = 2*], [*size = 3*], [*size = 4*], [*size = 5*], [*size = 6*], [*size = 7*],
+          ),
+          table.hline(stroke: 0.6pt),
+
+          // --- w0_s1 (0 Warmup Steps) ---
+          table.cell(rowspan: 3)[*0 Step* \ `(w0_s1)`],
+          [512], [51.09], [51.09], [51.08], [51.07], [71.30], [51.06],
+          [1024], [51.08], [51.08], [51.07], [51.07], [OOM], [52.36],
+          [2048], [62.75], [63.06], [69.02], [74.99], [OOM], [OOM],
+
+          table.hline(stroke: 0.8pt),
+
+          // --- w1_s1 (1 Warmup Step) ---
+          table.cell(rowspan: 3)[*1 Step* \ `(w1_s1)`],
+          [512], [56.76], [59.64], [55.80], [56.25], [56.68], [57.35],
+          [1024], [67.41], [OOM], [66.55], [68.89], [70.11], [71.85],
+          [2048], [OOM], [OOM], [OOM], [OOM], [OOM], [OOM],
+
+          table.hline(stroke: 1.2pt),
+        ),
+        caption: [Peak memory usage (GiB) of the `xl` model under activation recomputation with varying checkpoint group sizes and context lengths.],
+      ) <recompute_peak_memory>
+  ]
