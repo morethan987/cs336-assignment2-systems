@@ -7,6 +7,7 @@ from typing import Any
 import einx
 import torch
 from cs336_basics.layers import softmax
+from torch import nn
 from torch.cuda import nvtx
 from torch.utils.checkpoint import checkpoint
 
@@ -108,17 +109,52 @@ def att_patch():
     _mha.scaled_dot_product_attention = _annotated_scaled_dot_product_attention  # type: ignore
 
 
+def _patch_einx_for_recompute():
+    """
+    Patch einx to prevent it from intercepting and wrapping PyTorch's
+    internal `_StopRecomputationError` into a `CallOperationError`.
+    """
+    try:
+        import einx._src.frontend.api as einx_api
+        import einx.errors
+
+        orig_create = einx.errors.CallOperationError.create
+
+        def patched_create(exception: BaseException, *args: Any, **kwargs: Any) -> Any:
+            if exception.__class__.__name__ == "_StopRecomputationError":
+                raise exception
+            return orig_create(exception, *args, **kwargs)
+
+        setattr(einx.errors.CallOperationError, "create", staticmethod(patched_create))  # noqa: B010
+        if hasattr(einx_api, "CallOperationError"):
+            setattr(einx_api.CallOperationError, "create", staticmethod(patched_create))  # noqa: B010
+
+    except (ImportError, AttributeError):
+        return
+
+
+def _run_block_chunk(blocks: nn.ModuleList, x: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
+    for block in blocks:
+        x: torch.Tensor = block(x, positions)
+    return x
+
+
+def _make_chunk_runner(chunk_blocks: nn.ModuleList) -> Callable:
+    def runner(x: torch.Tensor, positions: torch.Tensor):
+        return _run_block_chunk(chunk_blocks, x, positions)
+
+    return runner
+
+
 @register_patch(Patch.RECOMPUTE)
 def recompute_patch(group_size: int = 2):
-    """Monkey patch TransformerLM.forward to support activation checkpointing.
-
-    Args:
-        group_size (int): number of blocks to be grouped.
-    """
+    """Monkey patch TransformerLM.forward to support activation checkpointing."""
     import cs336_basics.layers.transformer_lm as _tlm
 
     if not hasattr(_tlm, "TransformerLM"):
         raise AttributeError("TransformerLM not found in cs336_basics.layers.transformer_lm")
+
+    _patch_einx_for_recompute()
 
     def _checkpointed_forward(
         self: _tlm.TransformerLM,
@@ -133,19 +169,13 @@ def recompute_patch(group_size: int = 2):
 
         x = self.embed(token_ids)
 
-        # block forward closure
-        def run_block_chunk(chunk_blocks, hidden_states, positions):
-            for block in chunk_blocks:
-                hidden_states = block(hidden_states, positions)
-            return hidden_states
-
         num_blocks = len(self.transformers)
         for i in range(0, num_blocks, group_size):
             chunk = self.transformers[i : i + group_size]
+            runner = _make_chunk_runner(chunk)
 
             x = checkpoint(
-                run_block_chunk,
-                chunk,
+                runner,
                 x,
                 token_positions,
                 use_reentrant=False,
@@ -154,5 +184,4 @@ def recompute_patch(group_size: int = 2):
         x = self.output_rms(x)
         return self.output_linear(x)
 
-    # patch
     _tlm.TransformerLM.forward = _checkpointed_forward
