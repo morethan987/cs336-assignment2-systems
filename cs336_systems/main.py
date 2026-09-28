@@ -7,6 +7,7 @@ from collections.abc import Callable
 from contextlib import ExitStack, nullcontext
 from dataclasses import asdict
 from pathlib import Path
+from typing import cast
 
 import torch
 from cs336_basics.layers import TransformerLM, cross_entropy
@@ -56,6 +57,10 @@ class BenchmarkHarness:
             eps=self.bench_cfg.eps,
             betas=self.bench_cfg.betas,
         )
+
+        # jit compile
+        if self.bench_cfg.jit_compile:
+            self.model = cast(TransformerLM, torch.compile(self.model))
 
         self.autocast_context = (
             torch.autocast(device_type="cuda", dtype=torch.bfloat16) if self.bench_cfg.use_mixed_precision and self.model_cfg.device.type == "cuda" else nullcontext()

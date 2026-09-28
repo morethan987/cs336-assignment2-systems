@@ -163,7 +163,7 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-benchmark_res
+timing_res
 profiles
 memory_res
 pytorch_attention_res

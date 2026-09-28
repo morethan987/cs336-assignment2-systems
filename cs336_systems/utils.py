@@ -60,6 +60,7 @@ class BenchConfig:
     patches: list[PatchSpec]
     steps: int
     warm_up: int
+    jit_compile: bool
     unit_ms: bool
     use_mixed_precision: bool
     batch_size: int
@@ -94,6 +95,7 @@ def parse_args() -> tuple[ModelConfig, BenchConfig]:
     bench_group.add_argument("--profilers", type=lambda s: [item.strip() for item in s.split(",")], default=["timing"])
     bench_group.add_argument("--steps", type=int, required=True)
     bench_group.add_argument("--warm_up", type=int, required=True)
+    bench_group.add_argument("--jit_compile", action="store_true", default=False)
     bench_group.add_argument("--use_mixed_precision", action="store_true", default=False)
     bench_group.add_argument("--patches", type=parse_patch_spec, default=[])
     bench_group.add_argument("--no_unit_ms", dest="unit_ms", action="store_false", default=True)
@@ -135,6 +137,7 @@ def parse_args() -> tuple[ModelConfig, BenchConfig]:
         patches=args.patches,
         steps=args.steps,
         warm_up=args.warm_up,
+        jit_compile=args.jit_compile,
         unit_ms=args.unit_ms,
         use_mixed_precision=args.use_mixed_precision,
         batch_size=args.batch_size,

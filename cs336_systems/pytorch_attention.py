@@ -1,6 +1,8 @@
+import argparse
 import gc
 import os
 import timeit
+from collections.abc import Callable
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -16,8 +18,6 @@ SEQ_LENS = [256, 1024, 4096, 8192, 16384]
 NUM_WARMUP = 10
 NUM_STEPS = 100
 BASE_OUTPUT_DIR = "pytorch_attention_res"
-TIMESTAMP = datetime.now(ZoneInfo("Asia/Chongqing")).strftime("%Y%m%d_%H%M%S")
-OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, TIMESTAMP)
 
 
 def _rand_qkv(d_model: int, seq_len: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -28,7 +28,7 @@ def _rand_qkv(d_model: int, seq_len: int) -> tuple[torch.Tensor, torch.Tensor, t
     return Q, K, V
 
 
-def _run_single_exp_impl(d_model: int, seq_len: int) -> tuple[np.ndarray, float, float]:
+def _run_single_exp_impl(d_model: int, seq_len: int, att_fn: Callable) -> tuple[np.ndarray, float, float]:
     """
     Execute the benchmark body. All tensors are scoped strictly as local variables.
 
@@ -45,7 +45,7 @@ def _run_single_exp_impl(d_model: int, seq_len: int) -> tuple[np.ndarray, float,
     # Warmup passes
     for _ in range(NUM_WARMUP):
         Q.grad = K.grad = V.grad = None
-        out = scaled_dot_product_attention(Q, K, V)
+        out = att_fn(Q, K, V)
         out.backward(grad_out)
     torch.cuda.synchronize(DEVICE)
 
@@ -59,7 +59,7 @@ def _run_single_exp_impl(d_model: int, seq_len: int) -> tuple[np.ndarray, float,
         # --- Forward Pass ---
         torch.cuda.synchronize(DEVICE)
         t0 = timeit.default_timer()
-        out = scaled_dot_product_attention(Q, K, V)
+        out = att_fn(Q, K, V)
         torch.cuda.synchronize(DEVICE)
         t1 = timeit.default_timer()
 
@@ -80,7 +80,7 @@ def _run_single_exp_impl(d_model: int, seq_len: int) -> tuple[np.ndarray, float,
     return raw_times, mem_before_bwd_mib, max_mem_mib
 
 
-def run_single_exp(d_model: int, seq_len: int) -> tuple[np.ndarray | None, float | None, float | None]:
+def run_single_exp(d_model: int, seq_len: int, is_compiled: bool) -> tuple[np.ndarray | None, float | None, float | None]:
     """
     Wrapper around `_run_single_exp_impl` to trap Out-Of-Memory exceptions.
 
@@ -89,7 +89,13 @@ def run_single_exp(d_model: int, seq_len: int) -> tuple[np.ndarray | None, float
             All elements are None if an OOM occurs.
     """
     try:
-        return _run_single_exp_impl(d_model, seq_len)
+        if is_compiled:
+            # reset Dynamo cache and recompile counter
+            torch.compiler.reset()
+            att_fn = torch.compile(scaled_dot_product_attention)
+        else:
+            att_fn = scaled_dot_product_attention
+        return _run_single_exp_impl(d_model, seq_len, att_fn)
     except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
         if "out of memory" in str(e).lower():
             # Frames and local variables are unwound automatically upon return;
@@ -134,12 +140,20 @@ def print_table_row(
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Attention Benchmark with optional torch.compile")
+    parser.add_argument("--compile", action="store_true", help="Enable torch.compile for attention")
+    args = parser.parse_args()
+
     assert torch.cuda.is_available(), "CUDA is not available on this system."
     # Ensure CUDA context is explicitly initialized and set to target device
     torch.cuda.init()
     torch.cuda.set_device(DEVICE)
+    torch.set_float32_matmul_precision("high")
 
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    mode_str = "compile" if args.compile else "eager"
+    timestamp = datetime.now(ZoneInfo("Asia/Chongqing")).strftime("%Y%m%d_%H%M%S")
+    output_dir = os.path.join(BASE_OUTPUT_DIR, f"{mode_str}_{timestamp}")
+    os.makedirs(output_dir, exist_ok=True)
 
     print("=" * 106)
     print(f" PyTorch Attention Benchmark (Batch Size={BATCH_SIZE}, Device={DEVICE})")
@@ -153,7 +167,7 @@ def main() -> None:
 
     for d_idx, d_model in enumerate(D_MODELS):
         for s_idx, seq_len in enumerate(SEQ_LENS):
-            raw_times, mem_before_mib, max_mem_mib = run_single_exp(d_model, seq_len)
+            raw_times, mem_before_mib, max_mem_mib = run_single_exp(d_model, seq_len, args.compile)
             print_table_row(d_model, seq_len, raw_times, mem_before_mib, max_mem_mib)
 
             if raw_times is not None:
@@ -165,7 +179,7 @@ def main() -> None:
     print(border)
 
     # Persist all metrics into a compressed archive
-    save_path = os.path.join(OUTPUT_DIR, "benchmark_results.npz")
+    save_path = os.path.join(output_dir, "benchmark_results.npz")
     np.savez_compressed(
         save_path,
         raw_times=raw_all,
