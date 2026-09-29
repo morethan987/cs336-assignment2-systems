@@ -90,7 +90,6 @@ def run_single_exp(d_model: int, seq_len: int, is_compiled: bool) -> tuple[np.nd
     """
     try:
         if is_compiled:
-            # reset Dynamo cache and recompile counter
             torch.compiler.reset()
             att_fn = torch.compile(scaled_dot_product_attention)
         else:
@@ -98,8 +97,6 @@ def run_single_exp(d_model: int, seq_len: int, is_compiled: bool) -> tuple[np.nd
         return _run_single_exp_impl(d_model, seq_len, att_fn)
     except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
         if "out of memory" in str(e).lower():
-            # Frames and local variables are unwound automatically upon return;
-            # gc and empty_cache reclaim the allocator pool cleanly.
             gc.collect()
             torch.cuda.empty_cache()
             return None, None, None
@@ -139,13 +136,53 @@ def print_table_row(
     print(f"| {d_model:^7} | {seq_len:^7} | {fwd_str:^18} | {bwd_str:^18} | {mem_str:^15} | {peak_str:^15} | {status_str} |")
 
 
+def load(file_path: str) -> dict[str, np.ndarray]:
+    """Load benchmark results from a .npz file."""
+    with np.load(file_path) as data:
+        return {key: data[key] for key in data.files}
+
+
+def show(data: dict[str, np.ndarray], title: str = "Attention Benchmark Results") -> None:
+    """Reproduce terminal benchmark table output from loaded data."""
+    border = "+---------+---------+--------------------+--------------------+-----------------+-----------------+--------+"
+    print("=" * 106)
+    print(f" {title}")
+    print("=" * 106)
+    print_table_header()
+
+    d_models = data["d_models"]
+    seq_lens = data["seq_lens"]
+    raw_times = data["raw_times"]
+    mem_before = data["mem_before"]
+    mem_peak = data["mem_peak"]
+
+    for d_idx, d_model in enumerate(d_models):
+        for s_idx, seq_len in enumerate(seq_lens):
+            if np.isnan(mem_peak[d_idx, s_idx]):
+                print_table_row(int(d_model), int(seq_len), None, None, None)
+            else:
+                print_table_row(
+                    int(d_model),
+                    int(seq_len),
+                    raw_times[d_idx, s_idx],
+                    float(mem_before[d_idx, s_idx]),
+                    float(mem_peak[d_idx, s_idx]),
+                )
+    print(border)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Attention Benchmark with optional torch.compile")
     parser.add_argument("--compile", action="store_true", help="Enable torch.compile for attention")
+    parser.add_argument("--show", type=str, default=None, help="Path to .npz file to display results directly")
     args = parser.parse_args()
 
+    # show mode
+    if args.show:
+        show(load(args.show), title=f"PyTorch Attention Benchmark ({args.show})")
+        return
+
     assert torch.cuda.is_available(), "CUDA is not available on this system."
-    # Ensure CUDA context is explicitly initialized and set to target device
     torch.cuda.init()
     torch.cuda.set_device(DEVICE)
     torch.set_float32_matmul_precision("high")
@@ -155,10 +192,7 @@ def main() -> None:
     output_dir = os.path.join(BASE_OUTPUT_DIR, f"{mode_str}_{timestamp}")
     os.makedirs(output_dir, exist_ok=True)
 
-    print("=" * 106)
-    print(f" PyTorch Attention Benchmark (Batch Size={BATCH_SIZE}, Device={DEVICE})")
-    print("=" * 106)
-    print_table_header()
+    print(f"Running benchmark (Batch Size={BATCH_SIZE}, Device={DEVICE}, Mode={mode_str})...")
 
     # Pre-allocate result grids (filled with NaN for OOM configurations)
     raw_all = np.full((len(D_MODELS), len(SEQ_LENS), 2, NUM_STEPS), np.nan, dtype=np.float64)
@@ -168,17 +202,12 @@ def main() -> None:
     for d_idx, d_model in enumerate(D_MODELS):
         for s_idx, seq_len in enumerate(SEQ_LENS):
             raw_times, mem_before_mib, max_mem_mib = run_single_exp(d_model, seq_len, args.compile)
-            print_table_row(d_model, seq_len, raw_times, mem_before_mib, max_mem_mib)
-
             if raw_times is not None:
                 raw_all[d_idx, s_idx] = raw_times
                 mem_before_all[d_idx, s_idx] = mem_before_mib
                 mem_peak_all[d_idx, s_idx] = max_mem_mib
 
-    border = "+---------+---------+--------------------+--------------------+-----------------+-----------------+--------+"
-    print(border)
-
-    # Persist all metrics into a compressed archive
+    # save
     save_path = os.path.join(output_dir, "benchmark_results.npz")
     np.savez_compressed(
         save_path,
@@ -189,6 +218,7 @@ def main() -> None:
         seq_lens=np.array(SEQ_LENS),
     )
 
+    show(load(save_path), title=f"PyTorch Attention Benchmark (Batch Size={BATCH_SIZE}, Device={DEVICE})")
     print(f"\n[+] Benchmark completed. All results saved to: {save_path}")
 
 

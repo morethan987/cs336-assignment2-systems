@@ -836,6 +836,73 @@ Depending on your GPU, some of these configurations are expected to run out of m
       caption: [Comparison of forward and backward pass timings between uncompiled and compiled (`torch.compile`) attention implementations (Batch Size=8, 100 timed steps). The data for compiled version can get by `uv run cs336_systems/pytorch_attention.py --compile`],
     ) <pytorch_compile_comparison>
 
+    Notablly, the compiled version does not affect the memory before backward (the tensors saved for backward) but reduced the peak memory. It indicates that the fusion of calculator does reduce some unnecessary memory access.
+
+    #figure(
+      table(
+        columns: (auto, auto, auto, auto, auto, auto),
+        inset: (x: 8pt, y: 3.5pt),
+        align: center + horizon,
+        stroke: none,
+
+        // Top border
+        table.hline(stroke: 1.2pt),
+
+        // Header
+        table.header(
+          table.cell(rowspan: 2)[*$d_"model"$*],
+          table.cell(rowspan: 2)[*Seq Len ($S$)*],
+          table.cell(colspan: 2, align: center + bottom, inset: (bottom: 2pt))[*Mem Before (MiB)*],
+          table.cell(colspan: 2, align: center + bottom, inset: (bottom: 2pt))[*Peak Mem (MiB)*],
+
+          // Sub-dividers under grouped headers
+          table.hline(start: 2, end: 4, stroke: 0.4pt),
+          table.hline(start: 4, end: 6, stroke: 0.4pt),
+
+          [*Uncompiled*], [*Compiled*], [*Uncompiled*], [*Compiled*],
+        ),
+        table.hline(stroke: 0.6pt),
+
+        // --- d_model = 16 ---
+        table.cell(rowspan: 5)[16],
+        [256], [20.90], [20.91], [29.02], [25.03],
+        [1024], [82.84], [82.88], [211.34], [147.38],
+        [4096], [1050.62], [1050.75], [3100.62], [2076.75],
+        [8192], [4133.00], [4133.25], [12329.00], [8233.25],
+        [16384], table.cell(colspan: 4)[#text(fill: rgb("d32f2f"))[*OOM* (Both)]],
+        table.hline(stroke: 0.3pt),
+
+        // --- d_model = 32 ---
+        table.cell(rowspan: 5)[32],
+        [256], [21.52], [21.53], [29.77], [25.78],
+        [1024], [85.34], [85.38], [214.34], [150.38],
+        [4096], [1060.62], [1060.75], [3112.62], [2088.75],
+        [8192], [4153.00], [4153.25], [12353.00], [8257.25],
+        [16384], table.cell(colspan: 4)[#text(fill: rgb("d32f2f"))[*OOM* (Both)]],
+        table.hline(stroke: 0.3pt),
+
+        // --- d_model = 64 ---
+        table.cell(rowspan: 5)[64],
+        [256], [22.77], [22.78], [31.27], [27.28],
+        [1024], [90.34], [90.38], [220.34], [156.38],
+        [4096], [1080.62], [1080.75], [3136.62], [2112.75],
+        [8192], [4193.00], [4193.25], [12401.00], [8305.25],
+        [16384], table.cell(colspan: 4)[#text(fill: rgb("d32f2f"))[*OOM* (Both)]],
+        table.hline(stroke: 0.3pt),
+
+        // --- d_model = 128 ---
+        table.cell(rowspan: 5)[128],
+        [256], [25.27], [25.28], [34.27], [30.28],
+        [1024], [100.34], [100.38], [232.34], [168.38],
+        [4096], [1120.62], [1120.75], [3184.62], [2160.75],
+        [8192], [4273.00], [4273.25], [12497.00], [8401.25],
+        [16384], table.cell(colspan: 4)[#text(fill: rgb("d32f2f"))[*OOM* (Both)]],
+
+        // Bottom border
+        table.hline(stroke: 1.2pt),
+      ),
+      caption: [Comparison of memory footprint (initial memory before execution and peak memory) between uncompiled and compiled (`torch.compile`) attention implementations (Batch Size=8). The data for compiled version can be retrieved via `uv run cs336_systems/pytorch_attention.py --compile`.],
+    ) <pytorch_compile_memory_comparison>
   ]
 
 + Now, compile your entire Transformer model in your end-to-end benchmarking script. How does the performance of the forward pass change? What about the combined forward and backward passes and optimizer steps?
@@ -844,7 +911,8 @@ Depending on your GPU, some of these configurations are expected to run out of m
 
   #response[
     #figure(
-      caption: [Comparison of stages timing between uncompiled and compiled Transformer model implementations. 4 Batch Size, 10 warm-up steps, 100 timed steps, run on RTX 6000D. The missed data is all OOM.])[
+      caption: [Comparison of stages timing between uncompiled and compiled Transformer model implementations. 4 Batch Size, 10 warm-up steps, 100 timed steps, run on RTX 6000D. The missed data is all OOM.],
+    )[
       #set text(10pt)
       #table(
         columns: (auto, auto, auto, auto, auto, auto, auto, auto, auto, auto),
