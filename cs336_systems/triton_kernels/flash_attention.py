@@ -18,65 +18,64 @@ class FlashAttention_NoTriton(torch.autograd.Function):
         Store: Q, K, V, O and L (logsumexp)
         Return: O
         """
-        q_shape = Q.shape  # original shape
+        q_shape = Q.shape  # (batch, seq_len, d_model)
         d_model = Q.shape[-1]
         ctx.Q_TILE_SIZE = tl.constexpr(32)
         ctx.KV_TILE_SIZE = tl.constexpr(32)
         ctx.is_causal = is_causal
 
-        # reshape to 2D
-        Q = einops.rearrange(Q, "... d -> (...) d")
-        K = einops.rearrange(K, "... d -> (...) d")
-        V = einops.rearrange(V, "... d -> (...) d")
+        Q = einops.rearrange(Q, "... s d -> (...) s d")
+        K = einops.rearrange(K, "... s d -> (...) s d")
+        V = einops.rearrange(V, "... s d -> (...) s d")
 
-        assert Q.is_cuda and K.is_cuda and V.is_cuda, "Expected CUDA tensors"
-        assert Q.is_contiguous() and K.is_contiguous() and V.is_contiguous(), "Our pointer arithmetic will assume contiguous Q, K, V"
+        B = Q.shape[0]
+        qtz = int(ctx.Q_TILE_SIZE)
+        ktz = int(ctx.KV_TILE_SIZE)
 
-        # tiling
-        Q_tiles = einops.rearrange(Q, "(nqt qtz) d -> nqt qtz d", qtz=ctx.Q_TILE_SIZE)
-        K_tiles = einops.rearrange(K, "(nkt ktz) d -> nkt ktz d", ktz=ctx.KV_TILE_SIZE)
-        V_tiles = einops.rearrange(V, "(nkt ktz) d -> nkt ktz d", ktz=ctx.KV_TILE_SIZE)
+        # only tiling on s dim (B, s, d) -> (B, nqt, qtz, d)
+        Q_tiles = einops.rearrange(Q, "b (nqt qtz) d -> b nqt qtz d", qtz=qtz)
+        K_tiles = einops.rearrange(K, "b (nkt ktz) d -> b nkt ktz d", ktz=ktz)
+        V_tiles = einops.rearrange(V, "b (nkt ktz) d -> b nkt ktz d", ktz=ktz)
 
-        nqt = Q_tiles.shape[0]
+        nqt = Q_tiles.shape[1]
+        nkt = K_tiles.shape[1]
 
         O_tiles = torch.empty_like(Q_tiles)
-        L_tiles = torch.empty((nqt, int(ctx.Q_TILE_SIZE)), device=Q.device, dtype=torch.float32)
+        L_tiles = torch.empty((B, nqt, qtz), device=Q.device, dtype=torch.float32)
 
-        for q_tile_idx in range(nqt):
-            q_block = Q_tiles[q_tile_idx]
-            o_block = torch.zeros((int(ctx.Q_TILE_SIZE), d_model), device=Q.device, dtype=torch.float32)
-            l = torch.zeros((int(ctx.Q_TILE_SIZE),), device=Q.device, dtype=torch.float32)
-            m = torch.full((int(ctx.Q_TILE_SIZE),), float("-inf"), device=Q.device, dtype=torch.float32)
-            for k_tile_idx in range(K_tiles.shape[0]):
-                k_block, v_block = K_tiles[k_tile_idx], V_tiles[k_tile_idx]
+        for b in range(B):
+            for q_tile_idx in range(nqt):
+                q_block = Q_tiles[b, q_tile_idx]  # (qtz, d)
+                o_block = torch.zeros((qtz, d_model), device=Q.device, dtype=torch.float32)
+                l = torch.zeros((qtz,), device=Q.device, dtype=torch.float32)
+                m = torch.full((qtz,), float("-inf"), device=Q.device, dtype=torch.float32)
 
-                # logits
-                s = einops.einsum(q_block, k_block, "qtz d, ktz d -> qtz ktz") / (d_model**0.5)
+                for k_tile_idx in range(nkt):
+                    k_block = K_tiles[b, k_tile_idx]  # (ktz, d)
+                    v_block = V_tiles[b, k_tile_idx]  # (ktz, d)
 
-                row_max, _ = torch.max(s, dim=-1)
-                m_new = torch.maximum(m, row_max)
+                    # logits
+                    s = einops.einsum(q_block, k_block, "qtz d, ktz d -> qtz ktz") / (d_model**0.5)
 
-                p_tilde = torch.exp(s - m_new[:, None])  # numerator
-                alpha = torch.exp(m - m_new)
+                    row_max = torch.amax(s, dim=-1)
+                    m_new = torch.maximum(m, row_max)
 
-                l = alpha * l + torch.sum(p_tilde, dim=-1)  # denominator
-                o_block = einops.einsum(p_tilde, v_block, "qtz ktz, ktz d -> qtz d") + alpha[:, None] * o_block  # without normalization
-                m = m_new
+                    p_tilde = torch.exp(s - m_new[:, None])
+                    alpha = torch.exp(m - m_new)
 
-            o_block = o_block / l[:, None]  # normalize
-            l_block = m + torch.log(l)  # logsumexp for backward
+                    l = alpha * l + torch.sum(p_tilde, dim=-1)
+                    o_block = alpha[:, None] * o_block + einops.einsum(p_tilde, v_block, "qtz ktz, ktz d -> qtz d")
+                    m = m_new
 
-            # write back
-            O_tiles[q_tile_idx] = o_block.to(Q.dtype)
-            L_tiles[q_tile_idx] = l_block
+                o_block = o_block / l[:, None]
+                l_block = m + torch.log(l)
 
-        # rearrange to origianl shape
-        O = einops.rearrange(O_tiles, "nqt qtz d -> (nqt qtz) d")
-        O = O.view(*q_shape)
+                O_tiles[b, q_tile_idx] = o_block.to(Q.dtype)
+                L_tiles[b, q_tile_idx] = l_block
 
-        L = einops.rearrange(L_tiles, "nqt qtz -> (nqt qtz)")
-        L = L.view(*q_shape[:-1])
+        O = O_tiles.view(*q_shape)
+        L = L_tiles.view(*q_shape[:-1])
 
-        ctx.save_for_backward(Q, K, V, O, L)
+        ctx.save_for_backward(Q.view(*q_shape), K.view(*q_shape), V.view(*q_shape), O, L)
 
         return O
