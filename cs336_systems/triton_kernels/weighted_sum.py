@@ -8,7 +8,6 @@ from torch.autograd.function import FunctionCtx
 class WeightedSumCtx(FunctionCtx):
     D_TILE_SIZE: tl.constexpr
     ROWS_TILE_SIZE: tl.constexpr
-    saved_tensors: tuple[torch.Tensor, ...]
 
 
 @triton.jit
@@ -196,7 +195,7 @@ class WeightedSumFunc(torch.autograd.Function):
     @staticmethod
     def backward(ctx: WeightedSumCtx, *grad_outs: torch.Tensor):
         (grad_out,) = grad_outs
-        x, weight = ctx.saved_tensors  # the x is reshaped to 2D
+        x, weight = ctx.saved_for_forward  # the x is reshaped to 2D
         n_rows, D = x.shape
 
         partial_grad_weight = torch.empty((triton.cdiv(n_rows, ctx.ROWS_TILE_SIZE), D), device=x.device, dtype=x.dtype)

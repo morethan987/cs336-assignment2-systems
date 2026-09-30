@@ -26,6 +26,46 @@
   #body
 ]
 
+// presudo code block
+#let algo-counter = counter("algorithm-line")
+
+#let l(body, indent: 0) = {
+  algo-counter.step()
+  grid(
+    columns: (2em, 1fr),
+    gutter: 0.5em,
+    align: (right + top, left + top),
+    context text(fill: luma(100), size: 0.85em, algo-counter.display()), pad(left: indent * 1.5em, body),
+  )
+}
+
+#let algorithm(title: none, body) = block(
+  width: 100%,
+  stroke: (y: 1.2pt + black),
+  inset: (y: 0.6em),
+  breakable: false,
+  {
+    algo-counter.update(0)
+    set text(size: 0.9em)
+    set block(spacing: 1em)
+    set par(leading: 0.6em) // soft wrap
+
+    if title != none {
+      block(
+        width: 100%,
+        stroke: (bottom: 0.5pt + black),
+        inset: (bottom: 0.5em),
+        outset: (bottom: 0.2em),
+        text(weight: "bold", size: 1.05em, title),
+      )
+    }
+
+    set grid(row-gutter: 0.65em)
+    body
+  },
+)
+
+
 /////////////////////////////////////////////
 
 = Profiling and Benchmarking
@@ -970,3 +1010,101 @@ Depending on your GPU, some of these configurations are expected to run out of m
         table.hline(stroke: 1.2pt),
       )]<transformer_model_compile_comparison>
   ]
+
+== FlashAttention-2 Forward Pass
+
++ Write a pure PyTorch (no Triton) `autograd.Function` that implements the FlashAttention-2 forward pass. This will be a lot slower than the regular PyTorch implementation, but will help you debug your Triton kernel.
+
+  Your implementation should take input $bold(Q)$, $bold(K)$, and $bold(V)$ as well as a flag `is_causal` and produce the output $bold(O)$ and the logsumexp value $L$. You can ignore the `is_causal` flag for this task. The `autograd.Function` forward should then save $L, bold(Q), bold(K), bold(V), bold(O)$ for the backward pass and return $bold(O)$. Remember that the implementation of the `forward` method of `autograd.Function` always takes the context as its first parameter. Any `autograd.Function` class needs to implement a backward method, but for now you can make it just raise `NotImplementedError`. If you need something to compare against, you can implement @eq-score to @eq-out and @eq-lse in PyTorch and compare your outputs.
+
+  The interface is then `def forward(ctx, Q, K, V, is_causal=False)`. Determine your own tile sizes, but make sure they are at least of size $16 times 16$. We will always test your code with dimensions that are powers of 2 and at least 16, so you don't need to worry about out-of-bounds accesses.
+
+  $ bold(S) = (bold(Q) bold(K)^top) / sqrt(d) $ <eq-score>
+  $ P_(i j) = "softmax"_j (bold(S))_(i j) $ <eq-prob>
+  $ bold(O) = bold(P) bold(V) $ <eq-out>
+  $ L_i = log(sum_j exp(bold(S)_(i j))) $ <eq-lse>
+
+  *Deliverable:* A `torch.autograd.Function` subclass that implements FlashAttention-2 in the forward pass. To test your code, implement `adapters.get_flashattention_autograd_function_pytorch`. Then, run the test with `uv run pytest -k test_flash_forward_pass_pytorch` and make sure your implementation passes it.
+
+  #response[]
+
+
++ Write a Triton kernel for the forward pass of FlashAttention-2 following Algorithm 1. Then, write another subclass of `torch.autograd.Function` that calls this (fused) kernel in the forward pass, instead of computing the result in PyTorch. A few problem-specific tips:
+
+  - To debug, we suggest comparing the results of each Triton operation you perform with the tiled PyTorch implementation you wrote in part (a).
+  - Your launch grid should be set as $(T_q, "batch_size")$, meaning each Triton program instance will load only elements from a single batch index, and only read/write to a single query tile of $bold(Q), bold(O)$, and $L$.
+  - The kernel should only have a single loop, which will iterate key tiles $1 <= j <= T_k$.
+  - Advance block pointers at the end of the loop.
+  - Use the function declaration below (using the block pointer we give you, you should be able to infer the setup of the rest of the pointers):
+
+  #algorithm(title: "Algorithm 1: FlashAttention-2 forward pass")[
+    #l[*Require:* $bold(Q) in RR^(N_q times d), bold(K), bold(V) in RR^(N_k times d)$, tile sizes $B_q, B_k$]
+    #l[Split $bold(Q)$ into $T_q = ceil(N_q / B_q)$ tiles $bold(Q)_1, dots, bold(Q)_(T_q)$ of size $B_q times d$]
+    #l[Split $bold(K), bold(V)$ into $T_k = ceil(N_k / B_k)$ tiles $bold(K)^((1)), dots, bold(K)^((T_k))$ and $bold(V)^((1)), dots, bold(V)^((T_k))$ of size $B_k times d$]
+    #l[*for* $i = 1, dots, T_q$ *do*]
+    #l(indent: 1)[Load $bold(Q)_i$ from global memory]
+    #l(indent: 1)[Initialize $bold(O)_i^((0)) = bold(0) in RR^(B_q times d), l_i^((0)) = 0 in RR^(B_q), m_i^((0)) = -infinity in RR^(B_q)$]
+    #l(indent: 1)[*for* $j = 1, dots, T_k$ *do*]
+    #l(indent: 2)[Load $bold(K)^((j)), bold(V)^((j))$ from global memory]
+    #l(indent: 2)[Compute tile of pre-softmax attention scores $bold(S)_i^((j)) = (bold(Q)_i (bold(K)^((j)))^top) / sqrt(d) in RR^(B_q times B_k)$]
+    #l(indent: 2)[Compute $m_i^((j)) = max(m_i^((j-1)), "rowmax"(bold(S)_i^((j)))) in RR^(B_q)$]
+    #l(indent: 2)[Compute $tilde(bold(P))_i^((j)) = exp(bold(S)_i^((j)) - m_i^((j))) in RR^(B_q times B_k)$]
+    #l(indent: 2)[Compute $l_i^((j)) = exp(m_i^((j-1)) - m_i^((j))) l_i^((j-1)) + "rowsum"(tilde(bold(P))_i^((j))) in RR^(B_q)$]
+    #l(indent: 2)[Compute $bold(O)_i^((j)) = "diag"(exp(m_i^((j-1)) - m_i^((j)))) bold(O)_i^((j-1)) + tilde(bold(P))_i^((j)) bold(V)^((j))$]
+    #l(indent: 1)[*end for*]
+    #l(indent: 1)[Compute $bold(O)_i = "diag"(l_i^((T_k)))^(-1) bold(O)_i^((T_k))$]
+    #l(indent: 1)[Compute $L_i = m_i^((T_k)) + log(l_i^((T_k)))$]
+    #l(indent: 1)[Write $bold(O)_i$ to global memory as the $i$-th tile of $bold(O)$.]
+    #l(indent: 1)[Write $L_i$ to global memory as the $i$-th tile of $L$.]
+    #l[*end for*]
+    #l[*Return* the output $bold(O)$ and the logsumexp $L$.]
+  ]
+
+  ```python
+  @triton.jit
+  def flash_fwd_kernel(
+      Q_ptr, K_ptr, V_ptr,
+      O_ptr, L_ptr,
+      stride_qb, stride_qq, stride_qd,
+      stride_kb, stride_kk, stride_kd,
+      stride_vb, stride_vk, stride_vd,
+      stride_ob, stride_oq, stride_od,
+      stride_lb, stride_lq,
+      N_QUERIES, N_KEYS,
+      scale,
+      D: tl.constexpr,
+      Q_TILE_SIZE: tl.constexpr,
+      K_TILE_SIZE: tl.constexpr,
+  ):
+      # Program indices
+      query_tile_index = tl.program_id(0)
+      batch_index = tl.program_id(1)
+
+      # Offset each pointer with the corresponding batch index
+      # multiplied with the batch stride for each tensor
+      Q_block_ptr = tl.make_block_ptr(
+          Q_ptr + batch_index * stride_qb,
+          shape=(N_QUERIES, D),
+          strides=(stride_qq, stride_qd),
+          offsets=(query_tile_index * Q_TILE_SIZE, 0),
+          block_shape=(Q_TILE_SIZE, D),
+          order=(1, 0),
+      )
+      ...
+  ```
+
+  where `scale` is $1 / sqrt(d)$ and `Q_TILE_SIZE` and `K_TILE_SIZE` are $B_q$ and $B_k$ respectively. You can tune these later.
+
+  These additional guidelines may help you avoid precision issues:
+  - The on chip buffers ($bold(O)_i, l, m$) should have dtype `tl.float32`. If you're accumulating into an output buffer, use the `acc` argument (`acc = tl.dot(..., acc=acc)`).
+  - Cast $tilde(bold(P))_i^((j))$ to the dtype of $bold(V)^((j))$ before multiplying them, and cast $bold(O)_i$ to the appropriate dtype before writing it to global memory. Casting is done with `tensor.to`. You can get the dtype of a tensor with `tensor.dtype`, and the dtype of a block pointer/pointer with `*_block_ptr.type.element_ty`.
+
+  *Deliverable:* A `torch.autograd.Function` subclass that implements FlashAttention-2 in the forward pass using your Triton kernel. Implement `adapters.get_flash_autograd_function_triton`. Then, run the test with `uv run pytest -k test_flash_forward_pass_triton` and make sure your implementation passes it.
+
+  #response[]
+
++ Add a flag as the last argument to your `autograd.Function` implementation for causal masking. This should be a boolean flag that, when set to `True`, enables an index comparison for causal masking. Your Triton kernel should have a corresponding additional parameter `is_causal: tl.constexpr` (this is a required type annotation). In Triton, construct appropriate index vectors for queries and keys, and compare them to form a square mask of size $B_q times B_k$. For elements that are masked out, add the constant value of `-1e6` to the corresponding elements of the attention score matrix $bold(S)_i^((j))$. Make sure to save the mask flag for backward using `ctx.is_causal = is_causal`.
+
+  *Deliverable:* An additional flag for your `torch.autograd.Function` subclass that implements the FlashAttention-2 forward pass with causal masking using your Triton kernel. Make sure that the flag is optional and defaults to `False` so the previous tests still pass.
+
+  #response[]
