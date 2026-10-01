@@ -1026,7 +1026,7 @@ Depending on your GPU, some of these configurations are expected to run out of m
 
   *Deliverable:* A `torch.autograd.Function` subclass that implements FlashAttention-2 in the forward pass. To test your code, implement `adapters.get_flashattention_autograd_function_pytorch`. Then, run the test with `uv run pytest -k test_flash_forward_pass_pytorch` and make sure your implementation passes it.
 
-  #response[]
+  #response[Success. See `FlashAttention_NoTriton` class in `./cs336_systems/triton_kernels/flash_attention.py`]
 
 
 + Write a Triton kernel for the forward pass of FlashAttention-2 following Algorithm 1. Then, write another subclass of `torch.autograd.Function` that calls this (fused) kernel in the forward pass, instead of computing the result in PyTorch. A few problem-specific tips:

@@ -1,5 +1,6 @@
 import einops
 import torch
+import triton
 import triton.language as tl
 from torch.autograd.function import FunctionCtx
 
@@ -78,4 +79,168 @@ class FlashAttention_NoTriton(torch.autograd.Function):
 
         ctx.save_for_backward(Q.view(*q_shape), K.view(*q_shape), V.view(*q_shape), O, L)
 
+        return O
+
+
+@triton.jit
+def flash_fwd_kernel(
+    Q_ptr,
+    K_ptr,
+    V_ptr,  # inputs
+    O_ptr,
+    L_ptr,  # outputs
+    stride_qb,
+    stride_qq,
+    stride_qd,  # q strides
+    stride_kb,
+    stride_kk,
+    stride_kd,  # k strides
+    stride_vb,
+    stride_vk,
+    stride_vd,  # v strides
+    stride_ob,
+    stride_oq,
+    stride_od,  # o strides
+    stride_lb,
+    stride_lq,  # l strides
+    N_QUERIES,
+    N_KEYS,
+    scale,
+    D: tl.constexpr,
+    Q_TILE_SIZE: tl.constexpr,
+    KV_TILE_SIZE: tl.constexpr,
+):
+    # why q is the first dim instead of b?
+    # The first dim should be the fastest dim oppositing to torch
+    q_idx = tl.program_id(0)
+    b_idx = tl.program_id(1)
+
+    Q_block_ptr = tl.make_block_ptr(
+        Q_ptr + b_idx * stride_qb,  # also caused by GPU launch order
+        shape=(N_QUERIES, D),
+        strides=(stride_qq, stride_qd),
+        offsets=(q_idx * Q_TILE_SIZE, 0),
+        block_shape=(Q_TILE_SIZE, D),
+        order=(1, 0),
+    )
+
+    K_block_ptr = tl.make_block_ptr(
+        K_ptr + b_idx * stride_kb,
+        shape=(D, N_KEYS),
+        strides=(stride_kd, stride_kk),
+        offsets=(0, 0),
+        block_shape=(D, KV_TILE_SIZE),
+        order=(0, 1),
+    )
+
+    V_block_ptr = tl.make_block_ptr(
+        V_ptr + b_idx * stride_vb,
+        shape=(N_KEYS, D),
+        strides=(stride_vk, stride_vd),
+        offsets=(0, 0),
+        block_shape=(KV_TILE_SIZE, D),
+        order=(1, 0),
+    )
+
+    O_block_ptr = tl.make_block_ptr(
+        O_ptr + b_idx * stride_ob,
+        shape=(N_QUERIES, D),
+        strides=(stride_oq, stride_od),
+        offsets=(q_idx * Q_TILE_SIZE, 0),
+        block_shape=(Q_TILE_SIZE, D),
+        order=(1, 0),
+    )
+
+    L_block_ptr = tl.make_block_ptr(
+        L_ptr + b_idx * stride_lb,
+        shape=(N_QUERIES,),
+        strides=(stride_lq,),
+        offsets=(q_idx * Q_TILE_SIZE,),
+        block_shape=(Q_TILE_SIZE,),
+        order=(0,),
+    )
+
+    q = tl.load(Q_block_ptr, boundary_check=(0,), padding_option="zero")
+    o = tl.zeros((Q_TILE_SIZE, D), dtype=tl.float32)
+    l = tl.zeros((Q_TILE_SIZE,), dtype=tl.float32)
+    m = tl.full((Q_TILE_SIZE,), float("-inf"), dtype=tl.float32)
+
+    for _ in range(tl.cdiv(N_KEYS, KV_TILE_SIZE)):
+        k = tl.load(K_block_ptr, boundary_check=(1,), padding_option="zero")
+        v = tl.load(V_block_ptr, boundary_check=(0,), padding_option="zero")
+
+        s = scale * tl.dot(q, k)  # logits
+
+        row_max = tl.max(s, axis=-1)
+        m_new = tl.maximum(m, row_max)
+
+        p_tilde = tl.exp(s - m_new[:, None])
+        alpha = tl.exp(m - m_new)
+
+        l = alpha * l + tl.sum(p_tilde, axis=-1)
+        o = alpha[:, None] * o + tl.dot(p_tilde, v)
+
+        m = m_new
+        K_block_ptr = tl.advance((0, KV_TILE_SIZE))
+        V_block_ptr = tl.advance((KV_TILE_SIZE, 0))
+
+    o = o / l[:, None]
+    l = m + tl.log(l)
+
+    tl.store(O_block_ptr, o, boundary_check=(0,))
+    tl.store(L_block_ptr, l)
+
+
+class FlashAttention(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx: FlashAttentionCtx, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, is_causal: bool = False) -> torch.Tensor:
+        """
+        FlashAttention forward
+        Store: Q, K, V, O and L (logsumexp)
+        Return: O
+        """
+        q_shape, k_shape, v_shape = Q.shape, K.shape, V.shape
+        ctx.Q_TILE_SIZE = tl.constexpr(32)
+        ctx.KV_TILE_SIZE = tl.constexpr(32)
+        ctx.is_causal = is_causal
+
+        Q = einops.rearrange(Q, "... nq d -> (...) nq d")
+        K = einops.rearrange(K, "... nkv d -> (...) nkv d")
+        V = einops.rearrange(V, "... nkv d -> (...) nkv d")
+
+        batch_size, num_q, d_model = Q.shape
+        num_k = K.shape[1]
+        O = torch.zeros_like(Q)
+        L = torch.zeros((batch_size, num_q), device=Q.device, dtype=torch.float32)
+
+        flash_fwd_kernel[(tl.cdiv(num_q, ctx.Q_TILE_SIZE), batch_size)](
+            Q,
+            K,
+            V,
+            O,
+            L,
+            Q.stride(0),
+            Q.stride(1),
+            Q.stride(2),
+            K.stride(0),
+            K.stride(1),
+            K.stride(2),
+            V.stride(0),
+            V.stride(1),
+            V.stride(2),
+            O.stride(0),
+            O.stride(1),
+            O.stride(2),
+            L.stride(0),
+            L.stride(1),
+            N_QUERIES=num_q,
+            N_KEYS=num_k,
+            scale=1 / (d_model**0.5),
+            D=tl.constexpr(d_model),
+            Q_TILE_SIZE=ctx.Q_TILE_SIZE,
+            KV_TILE_SIZE=ctx.KV_TILE_SIZE,
+        )
+
+        O = O.view(*q_shape)
+        ctx.save_for_backward(Q.view(*q_shape), K.view(*k_shape), V.view(*v_shape), O, L)
         return O
