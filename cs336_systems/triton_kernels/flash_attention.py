@@ -109,6 +109,7 @@ def flash_fwd_kernel(
     D: tl.constexpr,
     Q_TILE_SIZE: tl.constexpr,
     KV_TILE_SIZE: tl.constexpr,
+    IS_CAUSAL: tl.constexpr,
 ):
     # why q is the first dim instead of b?
     # The first dim should be the fastest dim oppositing to torch
@@ -165,11 +166,25 @@ def flash_fwd_kernel(
     l = tl.zeros((Q_TILE_SIZE,), dtype=tl.float32)
     m = tl.full((Q_TILE_SIZE,), float("-inf"), dtype=tl.float32)
 
-    for _ in range(tl.cdiv(N_KEYS, KV_TILE_SIZE)):
+    offs_q = q_idx * Q_TILE_SIZE + tl.arange(0, Q_TILE_SIZE)
+    offs_k_base = tl.arange(0, KV_TILE_SIZE)
+
+    if IS_CAUSAL:
+        max_k = tl.minimum((q_idx + 1) * Q_TILE_SIZE, N_KEYS)
+        num_k_tile = tl.cdiv(max_k, KV_TILE_SIZE)
+    else:
+        num_k_tile = tl.cdiv(N_KEYS, KV_TILE_SIZE)
+
+    for k_idx in range(num_k_tile):
         k = tl.load(K_block_ptr, boundary_check=(1,), padding_option="zero")
         v = tl.load(V_block_ptr, boundary_check=(0,), padding_option="zero")
 
         s = scale * tl.dot(q, k)  # logits
+
+        offs_k = k_idx * KV_TILE_SIZE + offs_k_base
+        if IS_CAUSAL:
+            mask = offs_q[:, None] >= offs_k[None, :]
+            s = tl.where(mask, s, float("-inf"))
 
         row_max = tl.max(s, axis=-1)
         m_new = tl.maximum(m, row_max)
@@ -181,14 +196,14 @@ def flash_fwd_kernel(
         o = alpha[:, None] * o + tl.dot(p_tilde, v)
 
         m = m_new
-        K_block_ptr = tl.advance((0, KV_TILE_SIZE))
-        V_block_ptr = tl.advance((KV_TILE_SIZE, 0))
+        K_block_ptr = tl.advance(K_block_ptr, (0, KV_TILE_SIZE))
+        V_block_ptr = tl.advance(V_block_ptr, (KV_TILE_SIZE, 0))
 
     o = o / l[:, None]
     l = m + tl.log(l)
 
     tl.store(O_block_ptr, o, boundary_check=(0,))
-    tl.store(L_block_ptr, l)
+    tl.store(L_block_ptr, l, boundary_check=(0,))
 
 
 class FlashAttention(torch.autograd.Function):
@@ -213,7 +228,7 @@ class FlashAttention(torch.autograd.Function):
         O = torch.zeros_like(Q)
         L = torch.zeros((batch_size, num_q), device=Q.device, dtype=torch.float32)
 
-        flash_fwd_kernel[(tl.cdiv(num_q, ctx.Q_TILE_SIZE), batch_size)](
+        flash_fwd_kernel[(triton.cdiv(num_q, ctx.Q_TILE_SIZE), batch_size)](
             Q,
             K,
             V,
@@ -239,6 +254,7 @@ class FlashAttention(torch.autograd.Function):
             D=tl.constexpr(d_model),
             Q_TILE_SIZE=ctx.Q_TILE_SIZE,
             KV_TILE_SIZE=ctx.KV_TILE_SIZE,
+            IS_CAUSAL=tl.constexpr(ctx.is_causal),
         )
 
         O = O.view(*q_shape)
