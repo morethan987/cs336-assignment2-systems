@@ -1107,4 +1107,26 @@ Depending on your GPU, some of these configurations are expected to run out of m
 
   *Deliverable:* An additional flag for your `torch.autograd.Function` subclass that implements the FlashAttention-2 forward pass with causal masking using your Triton kernel. Make sure that the flag is optional and defaults to `False` so the previous tests still pass.
 
-  #response[]
+  #response[Success. See `FlashAttention_NoTriton` class in `./cs336_systems/triton_kernels/flash_attention.py`]
+
+== FlashAttention-2 Backward Pass
+
+Implement the backward pass for your FlashAttention-2 `autograd.Function` using PyTorch (not Triton) and `torch.compile`. Your implementation should take the Q, K, V, O, dO and L tensors as inputs, and return dQ, dK and dV. Remember to compute and use the D vector. You may follow along the computations of the equation below.
+
+$ D = op("rowsum")(bold(O) compose bold(d O)) $
+
+$ bold(P) bold(d P)^top = bold(P) (bold(d O) bold(V)^top)^top = (bold(P) bold(V)) bold(d O)^top = bold(O) bold(d O)^top $
+
+$
+  bold(S) &= (bold(Q) bold(K)^top) / sqrt(d) \
+  P_(i j) &= exp(S_(i j) - L_i) \
+  bold(d V) &= bold(P)^top bold(d O) \
+  bold(d P) &= bold(d O) bold(V)^top \
+  d S_(i j) &= P_(i j) (d P_(i j) - D_i) \
+  bold(d Q) &= (bold(d S) bold(K)) / sqrt(d) \
+  bold(d K) &= (bold(d S)^top bold(Q)) / sqrt(d)
+$
+
+*Deliverable*: To test your implementation, run `uv run pytest -k test_flash_backward`.
+
+#response[Success. See `FlashAttention_NoTriton` class in `./cs336_systems/triton_kernels/flash_attention.py`]

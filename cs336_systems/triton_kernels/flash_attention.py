@@ -8,32 +8,33 @@ from torch.autograd.function import FunctionCtx
 class FlashAttentionCtx(FunctionCtx):
     Q_TILE_SIZE: tl.constexpr
     KV_TILE_SIZE: tl.constexpr
+    saved_tensors: tuple[torch.Tensor, ...]
     is_causal: bool
 
 
 class FlashAttention_NoTriton(torch.autograd.Function):
     @staticmethod
-    def forward(ctx: FlashAttentionCtx, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, is_causal: bool = False) -> torch.Tensor:
+    def forward(ctx, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, is_causal: bool = False) -> torch.Tensor:
         """
         FlashAttention forward
         Store: Q, K, V, O and L (logsumexp)
         Return: O
         """
         q_shape = Q.shape  # (batch, seq_len, d_model)
-        d_model = Q.shape[-1]
-        ctx.Q_TILE_SIZE = tl.constexpr(32)
-        ctx.KV_TILE_SIZE = tl.constexpr(32)
         ctx.is_causal = is_causal
+
+        qtz = 32
+        ktz = 32
 
         Q = einops.rearrange(Q, "... s d -> (...) s d")
         K = einops.rearrange(K, "... s d -> (...) s d")
         V = einops.rearrange(V, "... s d -> (...) s d")
 
-        B = Q.shape[0]
-        qtz = int(ctx.Q_TILE_SIZE)
-        ktz = int(ctx.KV_TILE_SIZE)
+        batch_size, _, d_model = Q.shape
+        num_keys = K.shape[1]
+        scale = d_model**-0.5
 
-        # only tiling on s dim (B, s, d) -> (B, nqt, qtz, d)
+        # only tiling on s dim (batch_size, s, d) -> (batch_size, nqt, qtz, d)
         Q_tiles = einops.rearrange(Q, "b (nqt qtz) d -> b nqt qtz d", qtz=qtz)
         K_tiles = einops.rearrange(K, "b (nkt ktz) d -> b nkt ktz d", ktz=ktz)
         V_tiles = einops.rearrange(V, "b (nkt ktz) d -> b nkt ktz d", ktz=ktz)
@@ -42,21 +43,34 @@ class FlashAttention_NoTriton(torch.autograd.Function):
         nkt = K_tiles.shape[1]
 
         O_tiles = torch.empty_like(Q_tiles)
-        L_tiles = torch.empty((B, nqt, qtz), device=Q.device, dtype=torch.float32)
+        L_tiles = torch.empty((batch_size, nqt, qtz), device=Q.device, dtype=torch.float32)
 
-        for b in range(B):
+        offs_q_base = torch.arange(qtz, device=Q.device)
+        offs_k_base = torch.arange(ktz, device=Q.device)
+
+        for b in range(batch_size):
             for q_tile_idx in range(nqt):
                 q_block = Q_tiles[b, q_tile_idx]  # (qtz, d)
                 o_block = torch.zeros((qtz, d_model), device=Q.device, dtype=torch.float32)
                 l = torch.zeros((qtz,), device=Q.device, dtype=torch.float32)
                 m = torch.full((qtz,), float("-inf"), device=Q.device, dtype=torch.float32)
 
-                for k_tile_idx in range(nkt):
+                if is_causal:
+                    min_q = q_tile_idx * qtz
+                    num_unmasked_k_tiles = min(nkt, min_q // ktz)
+                    max_k = min((q_tile_idx + 1) * qtz, num_keys)
+                    num_k_tiles = min(nkt, (max_k + ktz - 1) // ktz)
+                else:
+                    num_unmasked_k_tiles = nkt
+                    num_k_tiles = nkt
+
+                # unmasked tiles
+                for k_tile_idx in range(num_unmasked_k_tiles):
                     k_block = K_tiles[b, k_tile_idx]  # (ktz, d)
                     v_block = V_tiles[b, k_tile_idx]  # (ktz, d)
 
                     # logits
-                    s = einops.einsum(q_block, k_block, "qtz d, ktz d -> qtz ktz") / (d_model**0.5)
+                    s = scale * einops.einsum(q_block, k_block, "qtz d, ktz d -> qtz ktz")
 
                     row_max = torch.amax(s, dim=-1)
                     m_new = torch.maximum(m, row_max)
@@ -67,6 +81,28 @@ class FlashAttention_NoTriton(torch.autograd.Function):
                     l = alpha * l + torch.sum(p_tilde, dim=-1)
                     o_block = alpha[:, None] * o_block + einops.einsum(p_tilde, v_block, "qtz ktz, ktz d -> qtz d")
                     m = m_new
+
+                if is_causal:
+                    # masked tiles
+                    offs_q = q_tile_idx * qtz + offs_q_base
+                    for k_tile_idx in range(num_unmasked_k_tiles, num_k_tiles):
+                        k_block = K_tiles[b, k_tile_idx]
+                        v_block = V_tiles[b, k_tile_idx]
+
+                        s = scale * einops.einsum(q_block, k_block, "qtz d, ktz d -> qtz ktz")
+
+                        offs_k = k_tile_idx * ktz + offs_k_base
+                        mask = offs_q[:, None] >= offs_k[None, :]
+                        s = s.masked_fill(~mask, float("-inf"))
+
+                        row_max = torch.amax(s, dim=-1)
+                        m_new = torch.maximum(m, row_max)
+                        p_tilde = torch.exp(s - m_new[:, None])
+                        alpha = torch.exp(m - m_new)
+
+                        l = alpha * l + torch.sum(p_tilde, dim=-1)
+                        o_block = alpha[:, None] * o_block + einops.einsum(p_tilde, v_block, "qtz ktz, ktz d -> qtz d")
+                        m = m_new
 
                 o_block = o_block / l[:, None]
                 l_block = m + torch.log(l)
@@ -80,6 +116,31 @@ class FlashAttention_NoTriton(torch.autograd.Function):
         ctx.save_for_backward(Q.view(*q_shape), K.view(*q_shape), V.view(*q_shape), O, L)
 
         return O
+
+    @staticmethod
+    @torch.compile
+    def backward(ctx, *grad_outs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, None]:
+        (O_grad,) = grad_outs
+        Q, K, V, O, L = ctx.saved_tensors
+        d_model = Q.shape[-1]
+        scale = d_model**-0.5
+
+        S = scale * einops.einsum(Q, K, "... nq d, ... nk d -> ... nq nk")
+        P = torch.exp(S - L.unsqueeze(-1))
+
+        if ctx.is_causal:
+            P = torch.tril(P, diagonal=K.shape[-2] - Q.shape[-2])
+
+        V_grad = einops.einsum(P, O_grad, "... nq nk, ... nq d -> ... nk d")
+        P_grad = einops.einsum(O_grad, V, "... nq d, ... nk d -> ... nq nk")
+
+        D = torch.sum(O * O_grad, dim=-1, keepdim=True)
+        S_grad = P * (P_grad - D)
+
+        Q_grad = scale * einops.einsum(S_grad, K, "... nq nk, ... nk d -> ... nq d")
+        K_grad = scale * einops.einsum(S_grad, Q, "... nq nk, ... nq d -> ... nk d")
+
+        return Q_grad, K_grad, V_grad, None
 
 
 @triton.jit
@@ -280,3 +341,28 @@ class FlashAttention(torch.autograd.Function):
         O = O.view(*q_shape)
         ctx.save_for_backward(Q.view(*q_shape), K.view(*k_shape), V.view(*v_shape), O, L)
         return O
+
+    @staticmethod
+    @torch.compile
+    def backward(ctx, *grad_outs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, None]:
+        (O_grad,) = grad_outs
+        Q, K, V, O, L = ctx.saved_tensors
+        d_model = Q.shape[-1]
+        scale = d_model**-0.5
+
+        S = scale * einops.einsum(Q, K, "... nq d, ... nk d -> ... nq nk")
+        P = torch.exp(S - L.unsqueeze(-1))
+
+        if ctx.is_causal:
+            P = torch.tril(P, diagonal=K.shape[-2] - Q.shape[-2])
+
+        V_grad = einops.einsum(P, O_grad, "... nq nk, ... nq d -> ... nk d")
+        P_grad = einops.einsum(O_grad, V, "... nq d, ... nk d -> ... nq nk")
+
+        D = torch.sum(O * O_grad, dim=-1, keepdim=True)
+        S_grad = P * (P_grad - D)
+
+        Q_grad = scale * einops.einsum(S_grad, K, "... nq nk, ... nk d -> ... nq d")
+        K_grad = scale * einops.einsum(S_grad, Q, "... nq nk, ... nq d -> ... nk d")
+
+        return Q_grad, K_grad, V_grad, None
