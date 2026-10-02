@@ -1101,7 +1101,7 @@ Depending on your GPU, some of these configurations are expected to run out of m
 
   *Deliverable:* A `torch.autograd.Function` subclass that implements FlashAttention-2 in the forward pass using your Triton kernel. Implement `adapters.get_flash_autograd_function_triton`. Then, run the test with `uv run pytest -k test_flash_forward_pass_triton` and make sure your implementation passes it.
 
-  #response[]
+  #response[Success. See `FlashAttention` class in `./cs336_systems/triton_kernels/flash_attention.py`]
 
 + Add a flag as the last argument to your `autograd.Function` implementation for causal masking. This should be a boolean flag that, when set to `True`, enables an index comparison for causal masking. Your Triton kernel should have a corresponding additional parameter `is_causal: tl.constexpr` (this is a required type annotation). In Triton, construct appropriate index vectors for queries and keys, and compare them to form a square mask of size $B_q times B_k$. For elements that are masked out, add the constant value of `-1e6` to the corresponding elements of the attention score matrix $bold(S)_i^((j))$. Make sure to save the mask flag for backward using `ctx.is_causal = is_causal`.
 

@@ -170,25 +170,22 @@ def flash_fwd_kernel(
     offs_k_base = tl.arange(0, KV_TILE_SIZE)
 
     if IS_CAUSAL:
+        min_q = q_idx * Q_TILE_SIZE
+        num_unmasked_k_tiles = min_q // KV_TILE_SIZE
         max_k = tl.minimum((q_idx + 1) * Q_TILE_SIZE, N_KEYS)
         num_k_tile = tl.cdiv(max_k, KV_TILE_SIZE)
     else:
-        num_k_tile = tl.cdiv(N_KEYS, KV_TILE_SIZE)
+        num_unmasked_k_tiles = tl.cdiv(N_KEYS, KV_TILE_SIZE)
+        num_k_tile = num_unmasked_k_tiles
 
-    for k_idx in range(num_k_tile):
+    # unmasked tiles
+    for _ in range(num_unmasked_k_tiles):
         k = tl.load(K_block_ptr, boundary_check=(1,), padding_option="zero")
         v = tl.load(V_block_ptr, boundary_check=(0,), padding_option="zero")
 
-        s = scale * tl.dot(q, k)  # logits
-
-        offs_k = k_idx * KV_TILE_SIZE + offs_k_base
-        if IS_CAUSAL:
-            mask = offs_q[:, None] >= offs_k[None, :]
-            s = tl.where(mask, s, float("-inf"))
-
+        s = scale * tl.dot(q, k)
         row_max = tl.max(s, axis=-1)
         m_new = tl.maximum(m, row_max)
-
         p_tilde = tl.exp(s - m_new[:, None])
         alpha = tl.exp(m - m_new)
 
@@ -198,6 +195,29 @@ def flash_fwd_kernel(
         m = m_new
         K_block_ptr = tl.advance(K_block_ptr, (0, KV_TILE_SIZE))
         V_block_ptr = tl.advance(V_block_ptr, (KV_TILE_SIZE, 0))
+
+    if IS_CAUSAL:
+        # masked tiles, usually 1 or 2
+        for k_idx in range(num_unmasked_k_tiles, num_k_tile):
+            k = tl.load(K_block_ptr, boundary_check=(1,), padding_option="zero")
+            v = tl.load(V_block_ptr, boundary_check=(0,), padding_option="zero")
+
+            s = scale * tl.dot(q, k)
+            offs_k = k_idx * KV_TILE_SIZE + offs_k_base
+            mask = offs_q[:, None] >= offs_k[None, :]
+            s = tl.where(mask, s, float("-inf"))
+
+            row_max = tl.max(s, axis=-1)
+            m_new = tl.maximum(m, row_max)
+            p_tilde = tl.exp(s - m_new[:, None])
+            alpha = tl.exp(m - m_new)
+
+            l = alpha * l + tl.sum(p_tilde, axis=-1)
+            o = alpha[:, None] * o + tl.dot(p_tilde, v)
+
+            m = m_new
+            K_block_ptr = tl.advance(K_block_ptr, (0, KV_TILE_SIZE))
+            V_block_ptr = tl.advance(V_block_ptr, (KV_TILE_SIZE, 0))
 
     o = o / l[:, None]
     l = m + tl.log(l)
