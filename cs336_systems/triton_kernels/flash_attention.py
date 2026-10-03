@@ -118,28 +118,10 @@ class FlashAttention_NoTriton(torch.autograd.Function):
         return O
 
     @staticmethod
-    @torch.compile
-    def backward(ctx, *grad_outs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, None]:
+    def backward(ctx, *grad_outs: torch.Tensor):
         (O_grad,) = grad_outs
         Q, K, V, O, L = ctx.saved_tensors
-        d_model = Q.shape[-1]
-        scale = d_model**-0.5
-
-        S = scale * einops.einsum(Q, K, "... nq d, ... nk d -> ... nq nk")
-        P = torch.exp(S - L.unsqueeze(-1))
-
-        if ctx.is_causal:
-            P = torch.tril(P, diagonal=K.shape[-2] - Q.shape[-2])
-
-        V_grad = einops.einsum(P, O_grad, "... nq nk, ... nq d -> ... nk d")
-        P_grad = einops.einsum(O_grad, V, "... nq d, ... nk d -> ... nq nk")
-
-        D = torch.sum(O * O_grad, dim=-1, keepdim=True)
-        S_grad = P * (P_grad - D)
-
-        Q_grad = scale * einops.einsum(S_grad, K, "... nq nk, ... nk d -> ... nq d")
-        K_grad = scale * einops.einsum(S_grad, Q, "... nq nk, ... nq d -> ... nk d")
-
+        Q_grad, K_grad, V_grad = _flash_backward_compiled(Q, K, V, O, O_grad, L, ctx.is_causal)
         return Q_grad, K_grad, V_grad, None
 
 
@@ -287,6 +269,43 @@ def flash_fwd_kernel(
     tl.store(L_block_ptr, l, boundary_check=(0,))
 
 
+@torch.compile
+def _flash_backward_compiled(
+    Q: torch.Tensor,
+    K: torch.Tensor,
+    V: torch.Tensor,
+    O: torch.Tensor,
+    O_grad: torch.Tensor,
+    L: torch.Tensor,
+    is_causal: bool,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    d_model = Q.shape[-1]
+    scale = d_model**-0.5
+
+    S = scale * einops.einsum(Q, K, "... nq d, ... nk d -> ... nq nk")
+
+    # Mask S BEFORE exp to prevent overflow in future tokens
+    if is_causal:
+        mask = torch.triu(
+            torch.ones(S.shape[-2], S.shape[-1], device=S.device, dtype=torch.bool),
+            diagonal=1,
+        )
+        S = S.masked_fill(mask, float("-inf"))
+
+    P = torch.exp(S - L.unsqueeze(-1))
+
+    V_grad = einops.einsum(P, O_grad, "... nq nk, ... nq d -> ... nk d")
+    P_grad = einops.einsum(O_grad, V, "... nq d, ... nk d -> ... nq nk")
+
+    D = torch.sum(O * O_grad, dim=-1, keepdim=True)
+    S_grad = P * (P_grad - D)
+
+    Q_grad = scale * einops.einsum(S_grad, K, "... nq nk, ... nk d -> ... nq d")
+    K_grad = scale * einops.einsum(S_grad, Q, "... nq nk, ... nq d -> ... nk d")
+
+    return Q_grad, K_grad, V_grad
+
+
 class FlashAttention(torch.autograd.Function):
     @staticmethod
     def forward(ctx: FlashAttentionCtx, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, is_causal: bool = False) -> torch.Tensor:
@@ -343,26 +362,8 @@ class FlashAttention(torch.autograd.Function):
         return O
 
     @staticmethod
-    @torch.compile
-    def backward(ctx, *grad_outs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, None]:
+    def backward(ctx, *grad_outs: torch.Tensor):
         (O_grad,) = grad_outs
         Q, K, V, O, L = ctx.saved_tensors
-        d_model = Q.shape[-1]
-        scale = d_model**-0.5
-
-        S = scale * einops.einsum(Q, K, "... nq d, ... nk d -> ... nq nk")
-        P = torch.exp(S - L.unsqueeze(-1))
-
-        if ctx.is_causal:
-            P = torch.tril(P, diagonal=K.shape[-2] - Q.shape[-2])
-
-        V_grad = einops.einsum(P, O_grad, "... nq nk, ... nq d -> ... nk d")
-        P_grad = einops.einsum(O_grad, V, "... nq d, ... nk d -> ... nq nk")
-
-        D = torch.sum(O * O_grad, dim=-1, keepdim=True)
-        S_grad = P * (P_grad - D)
-
-        Q_grad = scale * einops.einsum(S_grad, K, "... nq nk, ... nk d -> ... nq d")
-        K_grad = scale * einops.einsum(S_grad, Q, "... nq nk, ... nq d -> ... nk d")
-
+        Q_grad, K_grad, V_grad = _flash_backward_compiled(Q, K, V, O, O_grad, L, ctx.is_causal)
         return Q_grad, K_grad, V_grad, None
