@@ -4,6 +4,8 @@ import triton
 import triton.language as tl
 from torch.autograd.function import FunctionCtx
 
+from .utils import get_optimal_tiles
+
 
 class FlashAttentionCtx(FunctionCtx):
     Q_TILE_SIZE: tl.constexpr
@@ -354,6 +356,67 @@ class FlashAttention(torch.autograd.Function):
             D=tl.constexpr(d_model),
             Q_TILE_SIZE=ctx.Q_TILE_SIZE,
             KV_TILE_SIZE=ctx.KV_TILE_SIZE,
+            IS_CAUSAL=tl.constexpr(ctx.is_causal),
+        )
+
+        O = O.view(*q_shape)
+        ctx.save_for_backward(Q.view(*q_shape), K.view(*k_shape), V.view(*v_shape), O, L)
+        return O
+
+    @staticmethod
+    def backward(ctx, *grad_outs: torch.Tensor):
+        (O_grad,) = grad_outs
+        Q, K, V, O, L = ctx.saved_tensors
+        Q_grad, K_grad, V_grad = _flash_backward_compiled(Q, K, V, O, O_grad, L, ctx.is_causal)
+        return Q_grad, K_grad, V_grad, None
+
+
+class FlashAttention_TileOpt(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, is_causal: bool = False) -> torch.Tensor:
+        q_shape, k_shape, v_shape = Q.shape, K.shape, V.shape
+
+        ctx.is_causal = is_causal
+
+        Q = einops.rearrange(Q, "... nq d -> (...) nq d")
+        K = einops.rearrange(K, "... nkv d -> (...) nkv d")
+        V = einops.rearrange(V, "... nkv d -> (...) nkv d")
+
+        batch_size, num_q, d_model = Q.shape
+        num_k = K.shape[1]
+
+        O = torch.empty_like(Q)
+        L = torch.empty((batch_size, num_q), device=Q.device, dtype=torch.float32)
+
+        Q_TILE_SIZE, KV_TILE_SIZE = get_optimal_tiles(d_model, seq_len=num_q, device=Q.device, dtype=Q.dtype)
+        grid = (triton.cdiv(num_q, Q_TILE_SIZE), batch_size)
+
+        flash_fwd_kernel[grid](
+            Q,
+            K,
+            V,
+            O,
+            L,
+            Q.stride(0),
+            Q.stride(1),
+            Q.stride(2),
+            K.stride(0),
+            K.stride(1),
+            K.stride(2),
+            V.stride(0),
+            V.stride(1),
+            V.stride(2),
+            O.stride(0),
+            O.stride(1),
+            O.stride(2),
+            L.stride(0),
+            L.stride(1),
+            N_QUERIES=num_q,
+            N_KEYS=num_k,
+            scale=1.0 / (d_model**0.5),
+            D=tl.constexpr(d_model),
+            Q_TILE_SIZE=tl.constexpr(Q_TILE_SIZE),
+            KV_TILE_SIZE=tl.constexpr(KV_TILE_SIZE),
             IS_CAUSAL=tl.constexpr(ctx.is_causal),
         )
 
