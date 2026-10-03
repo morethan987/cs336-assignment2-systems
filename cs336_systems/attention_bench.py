@@ -79,35 +79,47 @@ def _run_single_exp_impl(
 ) -> tuple[tuple[float, float, float], float, float]:
     """
     Execute benchmark using triton.testing.do_bench.
-
     Returns:
         ((fwd_ms, bwd_ms, e2e_ms), mem_before_bwd_mib, max_mem_mib)
     """
     Q, K, V = _rand_qkv(cfg.batch_size, d_model, seq_len, device=cfg.device, dtype=dtype)
     grad_out = torch.randn(cfg.batch_size, seq_len, d_model, device=cfg.device, dtype=dtype)
 
-    def run_fwd():
-        return att_fn(Q, K, V, cfg.causal_masking)
-
-    fwd_ms = float(triton.testing.do_bench(run_fwd, warmup=cfg.warm_up, rep=cfg.steps, return_mode="median"))
+    # forward
+    fwd_fn = lambda: att_fn(Q, K, V, cfg.causal_masking)
+    fwd_ms = float(triton.testing.do_bench(fwd_fn, warmup=cfg.warm_up, rep=cfg.steps, return_mode="median"))
 
     torch.cuda.reset_peak_memory_stats(cfg.device)
     out = att_fn(Q, K, V, cfg.causal_masking)
     mem_before_bwd_mib = float(torch.cuda.memory_allocated(cfg.device) / (1024**2))
 
-    def run_bwd():
-        Q.grad = K.grad = V.grad = None
-        out.backward(grad_out, retain_graph=True)
-
-    bwd_ms = float(triton.testing.do_bench(run_bwd, warmup=cfg.warm_up, rep=cfg.steps, return_mode="median"))
+    # backward
+    bwd_fn = lambda: out.backward(grad_out, retain_graph=True)
+    bwd_ms = float(
+        triton.testing.do_bench(
+            bwd_fn,
+            grad_to_none=[Q, K, V],
+            warmup=cfg.warm_up,
+            rep=cfg.steps,
+            return_mode="median",
+        )
+    )
     max_mem_mib = float(torch.cuda.max_memory_allocated(cfg.device) / (1024**2))
 
+    # e2e pass
     def run_e2e():
-        Q.grad = K.grad = V.grad = None
         o = att_fn(Q, K, V, cfg.causal_masking)
         o.backward(grad_out)
 
-    e2e_ms = float(triton.testing.do_bench(run_e2e, warmup=cfg.warm_up, rep=cfg.steps, return_mode="median"))
+    e2e_ms = float(
+        triton.testing.do_bench(
+            run_e2e,
+            grad_to_none=[Q, K, V],
+            warmup=cfg.warm_up,
+            rep=cfg.steps,
+            return_mode="median",
+        )
+    )
 
     return (fwd_ms, bwd_ms, e2e_ms), mem_before_bwd_mib, max_mem_mib
 
@@ -143,8 +155,8 @@ def run_single_exp(
 
 
 def print_table_header() -> None:
-    border = "+-------+---------+---------+----------+----------+----------+-----------------+-----------------+--------+"
-    header = "| Dtype | d_model | seq_len | Fwd (ms) | Bwd (ms) | E2E (ms) | Mem Before(MiB) |  Peak Mem (MiB) | Status |"
+    border = "+----------+---------+---------+----------+----------+----------+-----------------+-----------------+--------+"
+    header = "| Dtype    | d_model | seq_len | Fwd (ms) | Bwd (ms) | E2E (ms) | Mem Before(MiB) |  Peak Mem (MiB) | Status |"
     print(border)
     print(header)
     print(border)
@@ -182,7 +194,7 @@ def load(file_path: str | Path) -> dict[str, np.ndarray]:
 
 def show(data: dict[str, np.ndarray], title: str = "Attention Benchmark Results") -> None:
     """Reproduce terminal benchmark table output from loaded data."""
-    border = "+-------+---------+---------+----------+----------+----------+-----------------+-----------------+--------+"
+    border = "+----------+---------+---------+----------+----------+----------+-----------------+-----------------+--------+"
     print("=" * 106)
     print(f" {title}")
     print("=" * 106)

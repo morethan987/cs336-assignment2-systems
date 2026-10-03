@@ -288,11 +288,11 @@ def _flash_backward_compiled(
 
     # Mask S BEFORE exp to prevent overflow in future tokens
     if is_causal:
-        mask = torch.triu(
-            torch.ones(S.shape[-2], S.shape[-1], device=S.device, dtype=torch.bool),
-            diagonal=1,
-        )
-        S = S.masked_fill(mask, float("-inf"))
+        n_q, n_k = S.shape[-2], S.shape[-1]
+        r_q = torch.arange(n_q, device=S.device).unsqueeze(-1)
+        r_k = torch.arange(n_k, device=S.device).unsqueeze(0)
+        S = torch.where(r_q >= r_k, S, float("-inf"))
+        S = S.masked_fill(r_q >= r_k, float("-inf"))
 
     P = torch.exp(S - L.unsqueeze(-1)).to(Q.dtype)
 
