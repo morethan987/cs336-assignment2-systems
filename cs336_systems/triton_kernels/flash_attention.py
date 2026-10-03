@@ -235,7 +235,7 @@ def flash_fwd_kernel(
         alpha = tl.exp(m - m_new)
 
         l = alpha * l + tl.sum(p_tilde, axis=-1)
-        o = alpha[:, None] * o + tl.dot(p_tilde, v)
+        o = alpha[:, None] * o + tl.dot(p_tilde.to(v.dtype), v)
 
         m = m_new
         K_block_ptr = tl.advance(K_block_ptr, (0, KV_TILE_SIZE))
@@ -258,7 +258,7 @@ def flash_fwd_kernel(
             alpha = tl.exp(m - m_new)
 
             l = alpha * l + tl.sum(p_tilde, axis=-1)
-            o = alpha[:, None] * o + tl.dot(p_tilde, v)
+            o = alpha[:, None] * o + tl.dot(p_tilde.to(v.dtype), v)
 
             m = m_new
             K_block_ptr = tl.advance(K_block_ptr, (0, KV_TILE_SIZE))
@@ -267,7 +267,7 @@ def flash_fwd_kernel(
     o = o / l[:, None]
     l = m + tl.log(l)
 
-    tl.store(O_block_ptr, o, boundary_check=(0,))
+    tl.store(O_block_ptr, o.to(q.dtype), boundary_check=(0,))
     tl.store(L_block_ptr, l, boundary_check=(0,))
 
 
@@ -294,13 +294,13 @@ def _flash_backward_compiled(
         )
         S = S.masked_fill(mask, float("-inf"))
 
-    P = torch.exp(S - L.unsqueeze(-1))
+    P = torch.exp(S - L.unsqueeze(-1)).to(Q.dtype)
 
     V_grad = einops.einsum(P, O_grad, "... nq nk, ... nq d -> ... nk d")
     P_grad = einops.einsum(O_grad, V, "... nq d, ... nk d -> ... nq nk")
 
-    D = torch.sum(O * O_grad, dim=-1, keepdim=True)
-    S_grad = P * (P_grad - D)
+    D = torch.sum((O * O_grad).to(torch.float32), dim=-1, keepdim=True)
+    S_grad = (P.to(torch.float32) * (P_grad.to(torch.float32) - D)).to(Q.dtype)
 
     Q_grad = scale * einops.einsum(S_grad, K, "... nq nk, ... nk d -> ... nq d")
     K_grad = scale * einops.einsum(S_grad, Q, "... nq nk, ... nq d -> ... nk d")
@@ -388,7 +388,8 @@ class FlashAttention_TileOpt(torch.autograd.Function):
         O = torch.empty_like(Q)
         L = torch.empty((batch_size, num_q), device=Q.device, dtype=torch.float32)
 
-        Q_TILE_SIZE, KV_TILE_SIZE = get_optimal_tiles(d_model, seq_len=num_q, device=Q.device, dtype=Q.dtype)
+        NUM_STAGES = 2
+        Q_TILE_SIZE, KV_TILE_SIZE = get_optimal_tiles(d_model, seq_len=num_q, device=Q.device, dtype=Q.dtype, num_stages=NUM_STAGES)
         grid = (triton.cdiv(num_q, Q_TILE_SIZE), batch_size)
 
         flash_fwd_kernel[grid](
@@ -418,6 +419,8 @@ class FlashAttention_TileOpt(torch.autograd.Function):
             Q_TILE_SIZE=tl.constexpr(Q_TILE_SIZE),
             KV_TILE_SIZE=tl.constexpr(KV_TILE_SIZE),
             IS_CAUSAL=tl.constexpr(ctx.is_causal),
+            num_stages=NUM_STAGES,  # ty: ignore[unknown-argument]
+            num_warps=4,  # ty: ignore[unknown-argument]
         )
 
         O = O.view(*q_shape)
