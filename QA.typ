@@ -1149,7 +1149,7 @@ Write a benchmarking script using #link("https://triton-lang.org/main/python-api
     The FlashAttention method dominate the E2E column. But somthing interesting is that FlashAttention forward is not always the best especially when context length is small (computation bound).
 
     #figure(
-      caption: [Latency and speedup comparison across Causal Attention implementations under `bfloat16` precision. 1 Batch Size, 25 ms warm-up steps, 100 ms timed steps, run on single RTX 6000. Eag: PyTorch Eager, Cmp: PyTorch Compiled, Fla: FlashAttention-2.],
+      caption: [Latency and speedup comparison across Causal Attention implementations under `bfloat16` precision. 1 Batch Size, 25 ms warm-up steps, 100 ms timed steps, run on single RTX 6000. Eag: PyTorch Eager, Cmp: PyTorch Compiled, Fla: FlashAttention-2. FlashAttention here is partial Triton kernel that means the backward pass is commen torch function optimizd by `torch.compile`],
     )[
       #set text(8pt)
       #table(
@@ -1234,7 +1234,7 @@ Write a benchmarking script using #link("https://triton-lang.org/main/python-api
     ] <att_bench_bfloat16>
 
     #figure(
-      caption: [Latency and speedup comparison across Causal Attention implementations under `float32` precision. 1 Batch Size, 25 ms warm-up steps, 100 ms timed steps, run on single RTX 6000. Eag: PyTorch Eager, Cmp: PyTorch Compiled, Fla: FlashAttention-2.],
+      caption: [Latency and speedup comparison across Causal Attention implementations under `float32` precision. 1 Batch Size, 25 ms warm-up steps, 100 ms timed steps, run on single RTX 6000. Eag: PyTorch Eager, Cmp: PyTorch Compiled, Fla: FlashAttention-2. FlashAttention here is partial Triton kernel that means the backward pass is commen torch function optimizd by `torch.compile`],
     )[
       #set text(8pt)
       #table(
@@ -1312,6 +1312,183 @@ Write a benchmarking script using #link("https://triton-lang.org/main/python-api
         [16384], [15.48], [5.50], [*1.94*], [30.09], [11.61], [*8.93*], [45.57], [17.07], [*10.73*], [4.25$times$], [1.59$times$],
         [32768], [62.01], [22.58], [*6.22*], [119.90], [46.38], [*35.81*], [181.87], [68.89], [*42.14*], [4.32$times$], [1.63$times$],
         [65536], [OOM], [OOM], [*22.84*], [OOM], [OOM], [*143.02*], [OOM], [OOM], [*165.78*], [$infinity$], [$infinity$],
+
+        // Bottom border
+        table.hline(stroke: 1.2pt),
+      )
+    ] <att_bench_float32>
+]
+
+== OPTIONAL: Triton backward pass
+
+Implement Triton backward kernel.
+
+#response[
+
+    #figure(
+      caption: [Latency and speedup comparison across Causal Attention implementations under `bfloat16` precision. 1 Batch Size, 25 ms warm-up steps, 100 ms timed steps, run on single RTX 6000. Eag: PyTorch Eager, Cmp: PyTorch Compiled, Fla: FlashAttention-2.],
+    )[
+      #set text(8pt)
+      #table(
+        columns: (auto,) * 13,
+        inset: (x: 4pt, y: 3pt),
+        align: center + horizon,
+        stroke: none,
+
+        // Top border
+        table.hline(stroke: 1.2pt),
+
+        // Header
+        table.header(
+          table.cell(rowspan: 2, align: center + horizon)[*$d$*],
+          table.cell(rowspan: 2, align: center + horizon)[*Seq\ Len*],
+          table.cell(colspan: 3, align: center + bottom, inset: (bottom: 2pt))[* Fwd (ms) *],
+          table.cell(colspan: 3, align: center + bottom, inset: (bottom: 2pt))[* Bwd (ms) *],
+          table.cell(colspan: 3, align: center + bottom, inset: (bottom: 2pt))[* E2E (ms) *],
+          table.cell(colspan: 2, align: center + bottom, inset: (bottom: 2pt))[* E2E Speedup *],
+
+          // Sub-dividers under grouped headers
+          table.hline(start: 2, end: 5, stroke: 0.4pt),
+          table.hline(start: 5, end: 8, stroke: 0.4pt),
+          table.hline(start: 8, end: 11, stroke: 0.4pt),
+          table.hline(start: 11, end: 13, stroke: 0.4pt),
+
+          [*Eag*], [*Cmp*], [*Fla*], [*Eag*], [*Cmp*], [*Fla*], [*Eag*], [*Cmp*], [*Fla*], [*vs Eag*], [*vs Cmp*],
+        ),
+        table.hline(stroke: 0.6pt),
+
+        // --- d = 16 ---
+        table.cell(rowspan: 10)[*16*], [128], [0.42], [0.62], [*0.01*], [0.40], [0.29], [*0.17*], [3.40], [3.04], [*0.57*], [6.00$times$], [5.38$times$],
+        [256], [0.42], [0.01], [*0.01*], [0.95], [0.38], [*0.15*], [3.41], [1.01], [*0.57*], [5.96$times$], [1.76$times$],
+        [512], [0.42], [0.02], [*0.01*], [1.02], [0.38], [*0.15*], [3.54], [0.99], [*0.57*], [6.23$times$], [1.75$times$],
+        [1024], [0.44], [0.02], [*0.02*], [1.03], [0.24], [*0.17*], [3.53], [1.02], [*0.57*], [6.21$times$], [1.79$times$],
+        [2048], [0.45], [0.04], [*0.03*], [0.99], [*0.47*], [0.56], [3.48], [1.06], [*0.94*], [3.69$times$], [1.12$times$],
+        [4096], [0.44], [0.12], [*0.06*], [0.97], [*0.29*], [0.55], [3.48], [1.03], [*0.96*], [3.62$times$], [1.08$times$],
+        [8192], [1.98], [0.60], [*0.12*], [3.77], [1.32], [*0.56*], [5.65], [1.85], [*0.97*], [5.85$times$], [1.91$times$],
+        [16384], [8.05], [2.37], [*0.22*], [14.85], [5.14], [*0.58*], [22.81], [7.43], [*1.00*], [22.80$times$], [7.43$times$],
+        [32768], [31.99], [9.47], [*0.47*], [59.08], [20.73], [*1.03*], [90.98], [30.15], [*1.42*], [64.12$times$], [21.25$times$],
+        [65536], [126.08], [38.03], [*1.12*], [235.83], [82.69], [*3.72*], [361.72], [121.34], [*4.91*], [73.74$times$], [24.74$times$],
+        table.hline(stroke: 0.3pt),
+        // --- d = 32 ---
+        table.cell(rowspan: 10)[*32*], [128], [0.41], [0.01], [*0.01*], [0.96], [0.22], [*0.10*], [3.46], [*0.78*], [0.93], [3.70$times$], [0.83$times$],
+        [256], [0.41], [*0.01*], [0.01], [0.95], [*0.38*], [0.55], [3.39], [1.01], [*0.95*], [3.55$times$], [1.06$times$],
+        [512], [0.42], [*0.02*], [0.02], [0.97], [*0.39*], [0.56], [3.46], [1.02], [*0.96*], [3.60$times$], [1.06$times$],
+        [1024], [0.44], [*0.03*], [0.03], [0.98], [*0.41*], [0.55], [3.47], [1.05], [*0.97*], [3.59$times$], [1.08$times$],
+        [2048], [0.44], [*0.05*], [0.06], [1.01], [*0.34*], [0.55], [3.57], [1.07], [*0.96*], [3.70$times$], [1.11$times$],
+        [4096], [0.44], [0.13], [*0.12*], [1.01], [*0.41*], [0.57], [3.68], [0.99], [*0.98*], [3.74$times$], [1.01$times$],
+        [8192], [1.99], [0.61], [*0.23*], [3.78], [1.33], [*0.57*], [5.64], [1.86], [*0.98*], [5.76$times$], [1.90$times$],
+        [16384], [8.04], [2.37], [*0.44*], [14.82], [5.15], [*0.68*], [22.70], [7.45], [*1.04*], [21.73$times$], [7.14$times$],
+        [32768], [31.64], [9.49], [*0.86*], [58.87], [20.84], [*1.58*], [90.85], [30.26], [*2.76*], [32.89$times$], [10.95$times$],
+        [65536], [125.62], [38.17], [*2.35*], [241.43], [89.35], [*7.35*], [366.88], [127.35], [*9.99*], [36.72$times$], [12.75$times$],
+        table.hline(stroke: 0.3pt),
+        // --- d = 64 ---
+        table.cell(rowspan: 10)[*64*], [128], [0.41], [*0.01*], [0.02], [0.95], [0.37], [*0.10*], [3.45], [0.99], [*0.94*], [3.67$times$], [1.05$times$],
+        [256], [0.42], [*0.01*], [0.02], [0.94], [*0.38*], [0.55], [3.51], [1.01], [*0.98*], [3.60$times$], [1.03$times$],
+        [512], [0.43], [*0.02*], [0.04], [0.96], [*0.38*], [0.55], [3.40], [1.02], [*0.97*], [3.51$times$], [1.05$times$],
+        [1024], [0.44], [*0.03*], [0.06], [0.96], [*0.40*], [0.57], [3.47], [1.03], [*0.96*], [3.60$times$], [1.07$times$],
+        [2048], [0.43], [*0.06*], [0.11], [0.98], [*0.32*], [0.56], [3.46], [1.03], [*0.96*], [3.59$times$], [1.07$times$],
+        [4096], [0.43], [*0.14*], [0.21], [0.98], [*0.30*], [0.56], [3.47], [*0.81*], [0.97], [3.59$times$], [0.84$times$],
+        [8192], [1.98], [0.60], [*0.41*], [3.74], [1.33], [*0.56*], [5.60], [1.87], [*0.99*], [5.66$times$], [1.89$times$],
+        [16384], [7.98], [2.40], [*0.81*], [14.82], [5.20], [*1.06*], [22.73], [7.53], [*1.82*], [12.49$times$], [4.14$times$],
+        [32768], [31.65], [9.45], [*1.78*], [58.69], [20.60], [*3.63*], [90.29], [30.00], [*5.45*], [16.58$times$], [5.51$times$],
+        [65536], [125.51], [38.56], [*5.18*], [233.99], [81.68], [*14.26*], [359.41], [120.01], [*19.77*], [18.18$times$], [6.07$times$],
+        table.hline(stroke: 0.3pt),
+        // --- d = 128 ---
+        table.cell(rowspan: 10)[*128*], [128], [0.40], [*0.01*], [0.01], [0.95], [0.38], [*0.04*], [3.45], [0.99], [*0.38*], [8.97$times$], [2.57$times$],
+        [256], [0.43], [*0.02*], [0.02], [0.94], [*0.43*], [0.55], [3.45], [1.02], [*0.98*], [3.53$times$], [1.05$times$],
+        [512], [0.43], [*0.02*], [0.03], [0.97], [*0.33*], [0.55], [3.48], [1.03], [*0.98*], [3.54$times$], [1.05$times$],
+        [1024], [0.44], [*0.03*], [0.05], [0.97], [*0.40*], [0.57], [3.53], [1.03], [*0.98*], [3.60$times$], [1.05$times$],
+        [2048], [0.44], [*0.06*], [0.09], [1.02], [*0.43*], [0.58], [3.54], [1.07], [*0.99*], [3.56$times$], [1.08$times$],
+        [4096], [0.45], [*0.17*], [0.18], [1.00], [*0.43*], [0.61], [3.53], [1.09], [*1.00*], [3.55$times$], [1.10$times$],
+        [8192], [2.00], [0.63], [*0.37*], [3.79], [1.40], [*0.70*], [5.72], [1.97], [*1.03*], [5.53$times$], [1.90$times$],
+        [16384], [8.06], [2.48], [*0.87*], [14.91], [5.32], [*1.81*], [22.88], [7.69], [*2.46*], [9.31$times$], [3.13$times$],
+        [32768], [31.99], [9.83], [*2.80*], [59.40], [21.29], [*7.23*], [91.34], [31.02], [*9.92*], [9.21$times$], [3.13$times$],
+        [65536], [129.51], [42.71], [*9.30*], [243.75], [91.27], [*29.34*], [372.87], [133.73], [*39.10*], [9.54$times$], [3.42$times$],
+
+        // Bottom border
+        table.hline(stroke: 1.2pt),
+      )
+    ] <att_bench_bfloat16>
+
+    #figure(
+      caption: [Latency and speedup comparison across Causal Attention implementations under `float32` precision. 1 Batch Size, 25 ms warm-up steps, 100 ms timed steps, run on single RTX 6000. Eag: PyTorch Eager, Cmp: PyTorch Compiled, Fla: FlashAttention-2.],
+    )[
+      #set text(8pt)
+      #table(
+        columns: (auto,) * 13,
+        inset: (x: 4pt, y: 3pt),
+        align: center + horizon,
+        stroke: none,
+
+        // Top border
+        table.hline(stroke: 1.2pt),
+
+        // Header
+        table.header(
+          table.cell(rowspan: 2, align: center + horizon)[*$d$*],
+          table.cell(rowspan: 2, align: center + horizon)[*Seq\ Len*],
+          table.cell(colspan: 3, align: center + bottom, inset: (bottom: 2pt))[* Fwd (ms) *],
+          table.cell(colspan: 3, align: center + bottom, inset: (bottom: 2pt))[* Bwd (ms) *],
+          table.cell(colspan: 3, align: center + bottom, inset: (bottom: 2pt))[* E2E (ms) *],
+          table.cell(colspan: 2, align: center + bottom, inset: (bottom: 2pt))[* E2E Speedup *],
+
+          // Sub-dividers under grouped headers
+          table.hline(start: 2, end: 5, stroke: 0.4pt),
+          table.hline(start: 5, end: 8, stroke: 0.4pt),
+          table.hline(start: 8, end: 11, stroke: 0.4pt),
+          table.hline(start: 11, end: 13, stroke: 0.4pt),
+
+          [*Eag*], [*Cmp*], [*Fla*], [*Eag*], [*Cmp*], [*Fla*], [*Eag*], [*Cmp*], [*Fla*], [*vs Eag*], [*vs Cmp*],
+        ),
+        table.hline(stroke: 0.6pt),
+
+        // --- d = 16 ---
+        table.cell(rowspan: 10)[*16*], [128], [0.42], [0.02], [*0.01*], [0.99], [0.29], [*0.08*], [3.50], [1.06], [*0.90*], [3.89$times$], [1.18$times$],
+        [256], [0.42], [0.02], [*0.01*], [0.97], [*0.41*], [0.50], [2.29], [1.06], [*0.91*], [2.52$times$], [1.17$times$],
+        [512], [0.44], [0.02], [*0.02*], [0.98], [*0.26*], [0.51], [3.52], [1.07], [*0.91*], [3.86$times$], [1.17$times$],
+        [1024], [0.44], [*0.03*], [0.03], [1.00], [*0.37*], [0.50], [3.52], [1.07], [*0.90*], [3.91$times$], [1.18$times$],
+        [2048], [0.44], [0.07], [*0.06*], [1.00], [*0.43*], [0.49], [3.55], [1.07], [*0.90*], [3.93$times$], [1.19$times$],
+        [4096], [0.55], [0.28], [*0.10*], [1.41], [0.70], [*0.52*], [3.59], [1.15], [*0.93*], [3.85$times$], [1.23$times$],
+        [8192], [3.68], [1.17], [*0.20*], [7.28], [2.58], [*0.52*], [10.87], [3.67], [*0.93*], [11.71$times$], [3.95$times$],
+        [16384], [14.53], [4.54], [*0.41*], [28.64], [10.17], [*0.80*], [43.14], [14.63], [*1.09*], [39.67$times$], [13.45$times$],
+        [32768], [57.91], [18.51], [*0.83*], [113.85], [40.43], [*1.75*], [171.73], [58.82], [*2.63*], [65.28$times$], [22.36$times$],
+        [65536], [OOM], [OOM], [*2.48*], [OOM], [OOM], [*7.46*], [OOM], [OOM], [*9.68*], [$infinity$], [$infinity$],
+        table.hline(stroke: 0.3pt),
+        // --- d = 32 ---
+        table.cell(rowspan: 10)[*32*], [128], [0.40], [0.02], [*0.02*], [0.99], [0.41], [*0.08*], [3.48], [1.01], [*0.91*], [3.82$times$], [1.11$times$],
+        [256], [0.43], [*0.02*], [0.02], [1.00], [*0.41*], [0.50], [3.52], [1.04], [*0.91*], [3.85$times$], [1.14$times$],
+        [512], [0.44], [*0.02*], [0.03], [0.99], [*0.41*], [0.50], [3.52], [1.05], [*0.92*], [3.82$times$], [1.14$times$],
+        [1024], [0.44], [*0.03*], [0.06], [1.02], [*0.42*], [0.52], [3.53], [1.06], [*0.92*], [3.83$times$], [1.15$times$],
+        [2048], [0.44], [*0.07*], [0.10], [1.01], [*0.42*], [0.52], [3.51], [1.07], [*0.92*], [3.80$times$], [1.16$times$],
+        [4096], [0.55], [0.27], [*0.19*], [1.38], [0.68], [*0.51*], [3.56], [1.12], [*0.93*], [3.83$times$], [1.20$times$],
+        [8192], [3.69], [1.18], [*0.38*], [7.29], [2.60], [*0.56*], [10.89], [3.69], [*0.96*], [11.37$times$], [3.85$times$],
+        [16384], [14.55], [4.55], [*0.76*], [28.67], [10.18], [*1.11*], [43.15], [14.65], [*1.83*], [23.53$times$], [7.99$times$],
+        [32768], [57.99], [18.56], [*1.67*], [114.00], [40.51], [*3.71*], [171.91], [58.97], [*5.57*], [30.88$times$], [10.59$times$],
+        [65536], [OOM], [OOM], [*5.13*], [OOM], [OOM], [*14.45*], [OOM], [OOM], [*19.52*], [$infinity$], [$infinity$],
+        table.hline(stroke: 0.3pt),
+        // --- d = 64 ---
+        table.cell(rowspan: 10)[*64*], [128], [0.38], [0.02], [*0.01*], [0.89], [0.41], [*0.08*], [3.48], [1.06], [*0.90*], [3.87$times$], [1.18$times$],
+        [256], [0.42], [0.02], [*0.02*], [0.98], [*0.46*], [0.50], [3.51], [1.06], [*0.95*], [3.69$times$], [1.11$times$],
+        [512], [0.44], [*0.02*], [*0.02*], [0.98], [*0.25*], [0.51], [3.50], [1.05], [*0.94*], [3.70$times$], [1.11$times$],
+        [1024], [0.44], [*0.04*], [0.04], [1.03], [*0.42*], [0.53], [3.49], [1.07], [*0.95*], [3.67$times$], [1.12$times$],
+        [2048], [0.44], [0.08], [*0.08*], [0.99], [*0.42*], [0.53], [3.49], [1.06], [*0.95*], [3.65$times$], [1.11$times$],
+        [4096], [0.58], [0.30], [*0.15*], [1.42], [0.73], [*0.54*], [3.59], [1.15], [*0.97*], [3.68$times$], [1.18$times$],
+        [8192], [3.72], [1.22], [*0.29*], [7.35], [2.67], [*0.78*], [11.00], [3.81], [*1.00*], [10.98$times$], [3.80$times$],
+        [16384], [14.64], [4.67], [*0.63*], [28.80], [10.34], [*1.80*], [43.41], [14.96], [*2.59*], [16.79$times$], [5.79$times$],
+        [32768], [59.60], [20.16], [*2.40*], [115.77], [42.26], [*7.58*], [175.34], [62.36], [*9.60*], [18.26$times$], [6.50$times$],
+        [65536], [OOM], [OOM], [*8.76*], [OOM], [OOM], [*29.92*], [OOM], [OOM], [*38.71*], [$infinity$], [$infinity$],
+        table.hline(stroke: 0.3pt),
+        // --- d = 128 ---
+        table.cell(rowspan: 10)[*128*], [128], [0.39], [0.02], [*0.01*], [0.99], [0.40], [*0.08*], [3.53], [1.05], [*0.87*], [4.08$times$], [1.21$times$],
+        [256], [0.43], [*0.02*], [*0.02*], [0.99], [*0.41*], [0.51], [3.56], [1.06], [*0.95*], [3.73$times$], [1.12$times$],
+        [512], [0.44], [*0.03*], [0.04], [1.00], [*0.41*], [0.52], [3.51], [1.06], [*0.96*], [3.64$times$], [1.10$times$],
+        [1024], [0.45], [*0.05*], [0.07], [1.03], [*0.37*], [0.54], [3.55], [1.00], [*0.97*], [3.66$times$], [1.03$times$],
+        [2048], [0.44], [*0.10*], [0.13], [1.01], [*0.35*], [0.54], [3.47], [0.98], [*0.96*], [3.62$times$], [1.02$times$],
+        [4096], [0.65], [0.37], [*0.26*], [1.54], [0.83], [*0.73*], [3.56], [1.18], [*0.99*], [3.59$times$], [1.19$times$],
+        [8192], [3.93], [1.43], [*0.61*], [7.68], [3.02], [*1.92*], [11.58], [4.42], [*2.47*], [4.69$times$], [1.79$times$],
+        [16384], [15.48], [5.50], [*1.90*], [30.09], [11.61], [*6.27*], [45.57], [17.07], [*7.84*], [5.81$times$], [2.18$times$],
+        [32768], [62.01], [22.58], [*6.56*], [119.90], [46.38], [*24.71*], [181.87], [68.89], [*30.67*], [5.93$times$], [2.25$times$],
+        [65536], [OOM], [OOM], [*22.76*], [OOM], [OOM], [*96.40*], [OOM], [OOM], [*118.78*], [$infinity$], [$infinity$],
 
         // Bottom border
         table.hline(stroke: 1.2pt),

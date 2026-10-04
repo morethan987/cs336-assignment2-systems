@@ -4,7 +4,7 @@ import triton
 import triton.language as tl
 from torch.autograd.function import FunctionCtx
 
-from .utils import get_optimal_tiles
+from .utils import get_optimal_bwd_tiles, get_optimal_tiles
 
 
 class FlashAttentionCtx(FunctionCtx):
@@ -640,6 +640,8 @@ def _flash_backward(
     is_causal: bool = False,
     q_tile_size: int = 64,
     kv_tile_size: int = 64,
+    num_stages: int | None = None,
+    num_warps: int | None = None,
 ):
     batch_size, n_queries, d_model = q.shape
     _, n_keys, _ = k.shape
@@ -689,6 +691,8 @@ def _flash_backward(
         Q_TILE_SIZE=tl.constexpr(q_tile_size),
         KV_TILE_SIZE=tl.constexpr(kv_tile_size),
         IS_CAUSAL=tl.constexpr(is_causal),
+        num_stages=num_stages,  # ty: ignore[unknown-argument]
+        num_warps=num_warps,  # ty: ignore[unknown-argument]
     )
 
     # dK, dV
@@ -731,6 +735,8 @@ def _flash_backward(
         Q_TILE_SIZE=tl.constexpr(q_tile_size),
         KV_TILE_SIZE=tl.constexpr(kv_tile_size),
         IS_CAUSAL=tl.constexpr(is_causal),
+        num_stages=num_stages,  # ty: ignore[unknown-argument]
+        num_warps=num_warps,  # ty: ignore[unknown-argument]
     )
 
     return dq, dk, dv
@@ -832,10 +838,21 @@ class FlashAttention(torch.autograd.Function):
     def backward(ctx, *grad_outs: torch.Tensor):
         (O_grad,) = grad_outs
         Q, K, V, O, L = ctx.saved_tensors
+        q_shape, k_shape, v_shape = Q.shape, K.shape, V.shape
+
+        # flatten
+        Q = einops.rearrange(Q, "... nq d -> (...) nq d")
+        K = einops.rearrange(K, "... nkv d -> (...) nkv d")
+        V = einops.rearrange(V, "... nkv d -> (...) nkv d")
+        O = einops.rearrange(O, "... nq d -> (...) nq d")
+        O_grad = einops.rearrange(O_grad, "... nq d -> (...) nq d")
+        L = einops.rearrange(L, "... nq -> (...) nq")
+
         Q_TILE_SIZE = 64
         KV_TILE_SIZE = 64
         Q_grad, K_grad, V_grad = _flash_backward(Q, K, V, O, L, O_grad, ctx.is_causal, Q_TILE_SIZE, KV_TILE_SIZE)
-        return Q_grad, K_grad, V_grad, None
+
+        return Q_grad.view(*q_shape), K_grad.view(*k_shape), V_grad.view(*v_shape), None
 
 
 class FlashAttention_CpmBwd(torch.autograd.Function):
@@ -961,5 +978,30 @@ class FlashAttention_TileOpt(torch.autograd.Function):
     def backward(ctx, *grad_outs: torch.Tensor):
         (O_grad,) = grad_outs
         Q, K, V, O, L = ctx.saved_tensors
-        Q_grad, K_grad, V_grad = _flash_backward_compiled(Q, K, V, O, O_grad, L, ctx.is_causal)
-        return Q_grad, K_grad, V_grad, None
+        q_shape, k_shape, v_shape = Q.shape, K.shape, V.shape
+
+        # flatten
+        Q = einops.rearrange(Q, "... nq d -> (...) nq d")
+        K = einops.rearrange(K, "... nkv d -> (...) nkv d")
+        V = einops.rearrange(V, "... nkv d -> (...) nkv d")
+        O = einops.rearrange(O, "... nq d -> (...) nq d")
+        O_grad = einops.rearrange(O_grad, "... nq d -> (...) nq d")
+        L = einops.rearrange(L, "... nq -> (...) nq")
+
+        _, n_queries, d_model = Q.shape
+        n_keys = K.shape[1]
+
+        NUM_STAGES = 2
+        NUM_WARPS = 4
+        Q_TILE_SIZE, KV_TILE_SIZE = get_optimal_bwd_tiles(
+            d_model=d_model,
+            n_queries=n_queries,
+            n_keys=n_keys,
+            dtype=Q.dtype,
+            device=Q.device,
+            num_stages=NUM_STAGES,
+        )
+
+        Q_grad, K_grad, V_grad = _flash_backward(Q, K, V, O, L, O_grad, ctx.is_causal, Q_TILE_SIZE, KV_TILE_SIZE, num_stages=NUM_STAGES, num_warps=NUM_WARPS)
+
+        return Q_grad.view(*q_shape), K_grad.view(*k_shape), V_grad.view(*v_shape), None

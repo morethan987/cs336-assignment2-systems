@@ -60,3 +60,62 @@ def get_optimal_tiles(
             break
 
     return best_q_tile, best_kv_tile
+
+
+def get_optimal_bwd_tiles(
+    d_model: int,
+    n_queries: int,
+    n_keys: int,
+    dtype: torch.dtype,
+    device: torch.device,
+    num_stages: int = 2,
+) -> tuple[int, int]:
+    """
+    Hardware-aware tile size selector for backward kernels.
+    Evaluates SRAM consumption limits across both flash_bwd_dq and flash_bwd_dkv kernels.
+    """
+    usable_smem = get_hardware_limits(device)
+    elem_bytes = torch.empty(0, dtype=dtype).element_size()
+
+    # Candidate tiles ordered by descending priority
+    # Backward kernels exert higher SRAM/register pressure, typically starting from 64x64 downwards
+    candidate_tiles = [
+        (64, 64),
+        (64, 32),
+        (32, 64),
+        (32, 32),
+        (32, 16),
+        (16, 16),
+    ]
+
+    best_q_tile = 32
+    best_kv_tile = 32
+
+    max_q_pow2 = max(16, triton.next_power_of_2(n_queries))
+    max_k_pow2 = max(16, triton.next_power_of_2(n_keys))
+
+    for q_tile, kv_tile in candidate_tiles:
+        if q_tile > max_q_pow2 or kv_tile > max_k_pow2:
+            continue
+
+        # 1. Estimate SRAM footprint for flash_bwd_dq:
+        # - Resident: Q, O, dO (each q_tile * d_model)
+        # - Pipelined: K, V (each kv_tile * d_model across num_stages)
+        # - Intermediate buffer: attention logits/scores (q_tile * kv_tile * 4 bytes for fp32)
+        # - Alignment padding and metadata overhead (~2048 bytes)
+        smem_dq = 3 * (q_tile * d_model * elem_bytes) + num_stages * (2 * kv_tile * d_model * elem_bytes) + (q_tile * kv_tile * 4) + 2048
+
+        # 2. Estimate SRAM footprint for flash_bwd_dkv:
+        # - Resident: K, V (each kv_tile * d_model)
+        # - Pipelined: Q, dO (each q_tile * d_model across num_stages)
+        # - Intermediate buffer: attention logits/scores (q_tile * kv_tile * 4 bytes for fp32)
+        # - Alignment padding and metadata overhead (~2048 bytes)
+        smem_dkv = 2 * (kv_tile * d_model * elem_bytes) + num_stages * (2 * q_tile * d_model * elem_bytes) + (q_tile * kv_tile * 4) + 2048
+
+        # Both kernels must fit into the usable SRAM budget
+        if max(smem_dq, smem_dkv) <= usable_smem:
+            best_q_tile = q_tile
+            best_kv_tile = kv_tile
+            break
+
+    return best_q_tile, best_kv_tile
