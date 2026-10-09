@@ -1495,3 +1495,45 @@ Implement Triton backward kernel.
       )
     ] <att_bench_float32>
 ]
+
+= Distributed Data Parallel Training
+
+== Single-Node Distributed Communication
+
+Write a script to benchmark the runtime of the all-reduce operation in the single-node multi-process setup. The example code may provide a reasonable starting point. Experiment with varying the following settings:
+
+- `all-reduce` data size: float32 data tensors ranging over 1MB, 10MB, 100MB, 1GB.
+- Number of GPUs/processes: 2, 4, or 6.
+
+```py
+import os
+
+import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
+
+
+def setup(rank, world_size):
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = "29500"
+    dist.init_process_group("gloo", rank=rank, world_size=world_size)
+
+
+def distributed_demo(rank, world_size):
+    setup(rank, world_size)
+    data = torch.randint(0, 10, (3,))
+    print(f"rank {rank} data (before all-reduce): {data}")
+    dist.all_reduce(data, async_op=False)
+    print(f"rank {rank} data (after all-reduce): {data}")
+
+
+if __name__ == "__main__":
+    world_size = 4
+    mp.spawn(fn=distributed_demo, args=(world_size,), nprocs=world_size, join=True)
+```
+
+*Resource requirements*: Up to 6 GPUs. Each benchmarking run should take less than 5 minutes.
+
+*Deliverable*: Plot(s) and/or table(s) comparing the various settings, with 2-3 sentences of commentary about your results and thoughts about how the various factors interact.
+
+#response[]
