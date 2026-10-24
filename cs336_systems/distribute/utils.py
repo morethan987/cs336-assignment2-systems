@@ -2,6 +2,7 @@ import argparse
 import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
@@ -27,6 +28,7 @@ class DCConfig:
     data_size: str
     master_addr: str
     master_port: str
+    save_base_dir: Path
 
     def check(self):
         if self.device == "cpu" and self.backend == "nccl":
@@ -43,6 +45,7 @@ def parse_args() -> DCConfig:
     parser.add_argument("--data_size", type=str, default="1MB", help="e.g. 1MB, 10MB, 100MB, 1GB")
     parser.add_argument("--master_addr", type=str, default="localhost")
     parser.add_argument("--master_port", type=str, default="29500")
+    parser.add_argument("--save_base_dir", type=Path, default="distributed_res")
 
     args = parser.parse_args()
 
@@ -55,6 +58,7 @@ def parse_args() -> DCConfig:
         data_size=args.data_size,
         master_addr=args.master_addr,
         master_port=args.master_port,
+        save_base_dir=args.save_base_dir,
     )
     dc_cfg.check()
     return dc_cfg
@@ -74,10 +78,12 @@ def setup(rank: int, world_size: int, master_addr: str, master_port: str, backen
     os.environ["MASTER_ADDR"] = master_addr
     os.environ["MASTER_PORT"] = master_port
 
+    device_id = None
     if torch.cuda.is_available() and backend == "nccl":
         torch.cuda.set_device(rank)
+        device_id = torch.device(f"cuda:{rank}")
 
-    dist.init_process_group(backend, rank=rank, world_size=world_size)
+    dist.init_process_group(backend, rank=rank, world_size=world_size, device_id=device_id)
 
 
 def sync(device_type: str, rank: int = 0):
