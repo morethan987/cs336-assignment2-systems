@@ -7,7 +7,8 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 
-from cs336_systems.utils import ModelConfig, create_model_config, setup_model_args
+from cs336_systems.distribute.ddp import DDP_REGISTRY
+from cs336_systems.utils import ModelConfig
 
 UNITS = {
     "b": 1,
@@ -29,6 +30,7 @@ class DCConfig:
     device: str
     data_size: str
     batch_size: int
+    ddp_type: str
     master_addr: str
     master_port: str
     save_base_dir: Path
@@ -48,6 +50,7 @@ def setup_dc_benchmark_args(parser: argparse.ArgumentParser):
     group.add_argument("--device", type=str, default="cpu", choices=["cuda", "cpu"])
     group.add_argument("--data_size", type=str, default="1MB", help="e.g. 1MB, 10MB, 100MB, 1GB")
     group.add_argument("--batch_size", type=int, default=4)
+    group.add_argument("--ddp_type", type=str, default="naive", choices=list(DDP_REGISTRY.keys()))
     group.add_argument("--master_addr", type=str, default="localhost")
     group.add_argument("--master_port", type=str, default="29500")
     group.add_argument("--save_base_dir", type=Path, default="distributed_res")
@@ -62,6 +65,7 @@ def create_dc_config(args: argparse.Namespace) -> DCConfig:
         device=args.device,
         data_size=args.data_size,
         batch_size=args.batch_size,
+        ddp_type=args.ddp_type,
         master_addr=args.master_addr,
         master_port=args.master_port,
         save_base_dir=args.save_base_dir,
@@ -70,12 +74,12 @@ def create_dc_config(args: argparse.Namespace) -> DCConfig:
     return dc_cfg
 
 
-def generate_data(model_cfg: ModelConfig, dc_cfg: DCConfig) -> tuple[torch.Tensor, torch.Tensor]:
+def generate_data(model_cfg: ModelConfig, dc_cfg: DCConfig, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
     tks = torch.randint(
         0,
         model_cfg.vocab_size,
         (dc_cfg.batch_size, model_cfg.context_length + 1),
-        device=model_cfg.device,
+        device=device,
         dtype=torch.int,
     )
     return tks[:, :-1], tks[:, 1:]

@@ -83,7 +83,6 @@ def setup_model_args(parser: argparse.ArgumentParser):
     group.add_argument("--num_heads", type=int, default=None, help="Override num_heads")
     group.add_argument("--d_ff", type=int, default=None, help="Override d_ff")
     group.add_argument("--rope_theta", type=float, default=10000.0)
-    group.add_argument("--device", type=torch.device, default=torch.device("cuda:0" if torch.cuda.is_available() else "cpu"))
     group.add_argument("--dtype", type=parse_dtype, default=torch.bfloat16)
 
 
@@ -106,7 +105,6 @@ def create_model_config(args: argparse.Namespace) -> ModelConfig:
         num_heads=num_heads,
         d_ff=d_ff,
         rope_theta=args.rope_theta,
-        device=args.device,
         dtype=args.dtype,
     )
     model_cfg.validate()

@@ -11,7 +11,7 @@ from cs336_basics.layers import TransformerLM, cross_entropy
 from cs336_basics.train_loop import AdamW
 from torch.profiler import ProfilerActivity, profile, record_function
 
-from cs336_systems.distribute.ddp import NaiveDDP
+from cs336_systems.distribute.ddp import BaseDDP, get_ddp_cls
 from cs336_systems.distribute.utils import DCConfig, create_dc_config, generate_data, setup, setup_dc_benchmark_args, sync
 from cs336_systems.utils import ModelConfig, create_model_config, setup_model_args
 
@@ -99,7 +99,7 @@ def analyze_trace_json(trace_path: Path) -> dict[str, float]:
     }
 
 
-def run_benchmark(rank: int, dc_cfg: DCConfig, model_cfg: ModelConfig, exp_dir: Path):
+def run_benchmark(rank: int, dc_cfg: DCConfig, model_cfg: ModelConfig, exp_dir: Path, ddp_cls: type[BaseDDP]):
     setup(rank, dc_cfg.world_size, dc_cfg.master_addr, dc_cfg.master_port, dc_cfg.backend)
 
     curr_device = torch.device(f"cuda:{rank}" if dc_cfg.device == "cuda" else "cpu")
@@ -115,14 +115,14 @@ def run_benchmark(rank: int, dc_cfg: DCConfig, model_cfg: ModelConfig, exp_dir: 
         model_cfg.num_heads,
         model_cfg.d_ff,
         model_cfg.rope_theta,
-        model_cfg.device,
+        curr_device,
         model_cfg.dtype,
     )
-    model = NaiveDDP(raw_model)
+    model = ddp_cls(raw_model)
     optimizer = AdamW(raw_model.parameters(), lr=1e-4, weight_decay=0.1)
 
     # data
-    x, targets = generate_data(model_cfg, dc_cfg)
+    x, targets = generate_data(model_cfg, dc_cfg, curr_device)
 
     # warm up
     for _ in range(dc_cfg.warm_up):
@@ -137,16 +137,15 @@ def run_benchmark(rank: int, dc_cfg: DCConfig, model_cfg: ModelConfig, exp_dir: 
     dist.barrier()
 
     # measure steps
+    start_event = torch.cuda.Event(enable_timing=True)
+    end_event = torch.cuda.Event(enable_timing=True)
     trace_path = exp_dir / f"trace_rank_{rank}.json"
     activities = [ProfilerActivity.CPU]
     if dc_cfg.device == "cuda":
         activities.append(ProfilerActivity.CUDA)
 
-    with profile(
-        activities=activities,
-        record_shapes=False,
-        profile_memory=False,
-    ) as prof:
+    with profile(activities=activities, record_shapes=False, profile_memory=False) as prof:
+        start_event.record()
         for _ in range(dc_cfg.steps):
             optimizer.zero_grad()
 
@@ -163,38 +162,49 @@ def run_benchmark(rank: int, dc_cfg: DCConfig, model_cfg: ModelConfig, exp_dir: 
             with record_function("OPTIMIZER_STEP"):
                 optimizer.step()
 
+        end_event.record()
+
     sync(dc_cfg.device, rank)
     dist.barrier()
+
+    total_step_time_ms = start_event.elapsed_time(end_event) / dc_cfg.steps
 
     # export and parse trace
     prof.export_chrome_trace(str(trace_path))
     metrics = analyze_trace_json(trace_path)
 
-    # average
+    metrics["total_step_time_ms"] = total_step_time_ms
     metrics["actual_comm_time_per_step_ms"] = metrics["actual_comm_time_ms"] / dc_cfg.steps
     metrics["exposed_comm_time_per_step_ms"] = metrics["exposed_comm_time_ms"] / dc_cfg.steps
+    metrics["comm_ratio_pct"] = (metrics["actual_comm_time_per_step_ms"] / total_step_time_ms) * 100.0
 
     # gather
     gathered_metrics: list[dict[str, float]] = [{} for _ in range(dc_cfg.world_size)]
     dist.all_gather_object(gathered_metrics, metrics)
 
     if rank == 0:
+        avg_step = sum(m["total_step_time_ms"] for m in gathered_metrics) / len(gathered_metrics)
         avg_comm = sum(m["actual_comm_time_per_step_ms"] for m in gathered_metrics) / len(gathered_metrics)
         avg_exposed = sum(m["exposed_comm_time_per_step_ms"] for m in gathered_metrics) / len(gathered_metrics)
+        avg_comm_ratio = sum(m["comm_ratio_pct"] for m in gathered_metrics) / len(gathered_metrics)
         avg_overlap_ratio = sum(m["overlap_ratio_pct"] for m in gathered_metrics) / len(gathered_metrics)
 
         print("\n" + "=" * 60)
         print(f" Benchmark Results ({dc_cfg.world_size} ranks, steps={dc_cfg.steps})")
         print("=" * 60)
-        print(f" 实际物理通信耗时 (去重叠): {avg_comm:.3f} ms / step")
-        print(f" 未遮蔽通信耗时 (Exposed): {avg_exposed:.3f} ms / step")
-        print(f" 通信遮蔽率 (Overlap Ratio): {avg_overlap_ratio:.2f}%")
+        print(f" Total time per step: {avg_step:.3f} ms / step")
+        print(f" Actual communication time: {avg_comm:.3f} ms / step")
+        print(f" Exposed communication time: {avg_exposed:.3f} ms / step")
+        print(f" Communication overhead proportion: {avg_comm_ratio:.2f}%")
+        print(f" Communication overlap ratio: {avg_overlap_ratio:.2f}%")
         print("=" * 60)
 
         results = {
             "summary": {
+                "avg_total_step_time_ms": avg_step,
                 "avg_actual_comm_per_step_ms": avg_comm,
                 "avg_exposed_comm_per_step_ms": avg_exposed,
+                "avg_comm_ratio_pct": avg_comm_ratio,
                 "avg_overlap_ratio_pct": avg_overlap_ratio,
             },
             "per_rank_metrics": gathered_metrics,
@@ -207,8 +217,9 @@ def run_benchmark(rank: int, dc_cfg: DCConfig, model_cfg: ModelConfig, exp_dir: 
 
 
 def main(dc_cfg: DCConfig, model_cfg: ModelConfig) -> None:
+    ddp_cls = get_ddp_cls(dc_cfg.ddp_type)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    exp_dir = dc_cfg.save_base_dir / f"{timestamp}_{dc_cfg.world_size}_{dc_cfg.backend}_naive_ddp_cmcp_overlap"
+    exp_dir = dc_cfg.save_base_dir / f"{timestamp}_{dc_cfg.world_size}_{dc_cfg.backend}_{dc_cfg.ddp_type}_ddp_cmcp_overlap"
     exp_dir.mkdir(parents=True, exist_ok=True)
 
     # save config
@@ -219,7 +230,7 @@ def main(dc_cfg: DCConfig, model_cfg: ModelConfig) -> None:
     with open(exp_dir / "args.json", "w", encoding="utf-8") as f:
         json.dump(combined_args, f, indent=4, default=str)
 
-    mp.spawn(fn=run_benchmark, args=(dc_cfg, model_cfg, exp_dir), nprocs=dc_cfg.world_size, join=True)
+    mp.spawn(fn=run_benchmark, args=(dc_cfg, model_cfg, exp_dir, ddp_cls), nprocs=dc_cfg.world_size, join=True)
 
 
 def parse_args() -> tuple[DCConfig, ModelConfig]:

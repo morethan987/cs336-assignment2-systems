@@ -1588,5 +1588,67 @@ In this naive DDP implementation, parameter gradients are individually all-reduc
 
 *Deliverable*: A description of your benchmarking setup, along with the measured time per training iteration and time spent communicating gradients for each setting.
 
-#response[]
+#response[
+  Experiment settings is clear in start up command. You can set `ddp_type` to `naive` or `overlapped` to get corresponded results.
+
+  ```bash
+  uv run cs336_systems/distribute/ddp_benchmarking.py \
+    --model_size xl \
+    --world_size 2 \
+    --device cuda \
+    --backend nccl \
+    --batch_size 2 \
+    --ddp_type overlapped \
+    --steps 10 \
+    --warm_up 5 \
+    --dtype bfloat16
+  ```
+
+  It is reasonable that overlapped ddp is faster when considering averaged step time. However, when we overlapping computation and communication, the actual communication overhead is 92.83 ms which is much higher than that of naive ddp (52.10 ms). Theoritically, All-Reduce is synchronous and each layer should wait for all GPU to be prepared. Communication is well aligned in naive ddp since almost all the communication is launched at the same time. But it is not true in overlapped ddp and the actual communication time should be the sum of data transport time and waiting time. Such a huge difference should be blamed to the accumulative affection between layers. When the previous layer is late, it should pay for that in every layer.
+
+  #figure(
+    caption: [Latency, communication overhead, and overlap ratio for DDP implementations on the `xl` model size across 2 GPUs on A100. Timed over 10 iterations after 5 warm-up steps. Naive DDP synchronizes gradients after backward completes, while Overlapped DDP triggers asynchronous All-Reduce per parameter hook.],
+  )[
+    #set text(10pt)
+    #table(
+      columns: (auto,) * 7,
+      inset: (x: 6pt, y: 3.5pt),
+      align: center + horizon,
+      stroke: none,
+
+      // Top border
+      table.hline(stroke: 1.2pt),
+
+      // Header
+      table.header(
+        table.cell(rowspan: 2, align: center + horizon)[*DDP Variant*],
+        table.cell(rowspan: 2, align: center + horizon)[*Rank*],
+        table.cell(rowspan: 2, align: center + horizon)[*Step avg (ms)*],
+        table.cell(colspan: 2, align: center + bottom, inset: (bottom: 2pt))[*Comm Time (ms)*],
+        table.cell(rowspan: 2, align: center + horizon)[*Comm Overhead*],
+        table.cell(rowspan: 2, align: center + horizon)[*Overlap Ratio*],
+
+        // Sub-divider under Comm Time
+        table.hline(start: 3, end: 5, stroke: 0.4pt),
+
+        [*Actual*], [*Exposed*],
+      ),
+      table.hline(stroke: 0.6pt),
+
+      // --- Naive DDP ---
+      table.cell(rowspan: 3)[*Naive DDP*\ (Baseline)], [Rank 0], [421.28], [47.42], [47.42], [11.26%], [0.00%],
+      [Rank 1], [421.28], [56.78], [56.78], [13.48%], [0.00%],
+      [*Avg*], [*421.28*], [*52.10*], [*52.10*], [*12.37%*], [*0.00%*],
+      table.hline(stroke: 0.3pt),
+
+      // --- Overlapped DDP ---
+      table.cell(rowspan: 3)[*Overlapped DDP*\ (Hook-based)], [Rank 0], [379.82], [119.62], [4.38], [31.49%], [96.34%],
+      [Rank 1], [379.73], [66.03], [3.37], [17.39%], [94.90%],
+      [*Avg*], [*379.77*], [*92.83*], [*3.87*], [*24.44%*], [*95.62%*],
+
+      // Bottom border
+      table.hline(stroke: 1.2pt),
+    )
+  ] <table-naive-ddp-bench>
+]
 
