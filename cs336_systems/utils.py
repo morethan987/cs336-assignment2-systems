@@ -72,23 +72,49 @@ class BenchConfig:
     betas: tuple[float, float] = (0.9, 0.95)
 
 
-def parse_args() -> tuple[ModelConfig, BenchConfig]:
-    parser = argparse.ArgumentParser(description="Transformer Language Model BenchMark")
+def setup_model_args(parser: argparse.ArgumentParser):
+    """Inject args of model"""
+    group = parser.add_argument_group("Model Arguments")
+    group.add_argument("--model_size", type=str, default="small", choices=["small", "medium", "large", "xl", "10B", "10b"])
+    group.add_argument("--vocab_size", type=int, default=10000)
+    group.add_argument("--context_length", type=int, default=512)
+    group.add_argument("--num_layers", type=int, default=None, help="Override num_layers")
+    group.add_argument("--d_model", type=int, default=None, help="Override d_model")
+    group.add_argument("--num_heads", type=int, default=None, help="Override num_heads")
+    group.add_argument("--d_ff", type=int, default=None, help="Override d_ff")
+    group.add_argument("--rope_theta", type=float, default=10000.0)
+    group.add_argument("--device", type=torch.device, default=torch.device("cuda:0" if torch.cuda.is_available() else "cpu"))
+    group.add_argument("--dtype", type=parse_dtype, default=torch.bfloat16)
 
-    # Model
-    model_group = parser.add_argument_group("Model Arguments")
-    model_group.add_argument("--model_size", type=str, default="small", choices=["small", "medium", "large", "xl", "10B", "10b"])
-    model_group.add_argument("--vocab_size", type=int, default=10000)
-    model_group.add_argument("--context_length", type=int, default=512)
-    model_group.add_argument("--num_layers", type=int, default=None, help="Override num_layers")
-    model_group.add_argument("--d_model", type=int, default=None, help="Override d_model")
-    model_group.add_argument("--num_heads", type=int, default=None, help="Override num_heads")
-    model_group.add_argument("--d_ff", type=int, default=None, help="Override d_ff")
-    model_group.add_argument("--rope_theta", type=float, default=10000.0)
-    model_group.add_argument("--device", type=torch.device, default=torch.device("cuda:0" if torch.cuda.is_available() else "cpu"))
-    model_group.add_argument("--dtype", type=parse_dtype, default=torch.bfloat16)
 
-    # Bench
+def create_model_config(args: argparse.Namespace) -> ModelConfig:
+    """Parse and construct `ModelConfig`"""
+    size_key = args.model_size.lower()
+    preset = MODEL_SIZES[size_key]
+    num_layers = args.num_layers if args.num_layers is not None else preset["num_layers"]
+    d_model = args.d_model if args.d_model is not None else preset["d_model"]
+    num_heads = args.num_heads if args.num_heads is not None else preset["num_heads"]
+    d_ff = args.d_ff if args.d_ff is not None else preset["d_ff"]
+
+    print(f"--> Using Model Size: {size_key} (layers={num_layers}, d_model={d_model}, heads={num_heads}, d_ff={d_ff})")
+
+    model_cfg = ModelConfig(
+        vocab_size=args.vocab_size,
+        context_length=args.context_length,
+        num_layers=num_layers,
+        d_model=d_model,
+        num_heads=num_heads,
+        d_ff=d_ff,
+        rope_theta=args.rope_theta,
+        device=args.device,
+        dtype=args.dtype,
+    )
+    model_cfg.validate()
+    return model_cfg
+
+
+def setup_bench_args(parser: argparse.ArgumentParser):
+    """Inject args of benchmark"""
     bench_group = parser.add_argument_group("Benchmark Arguments")
     bench_group.add_argument("--res_dir", type=Path, default=Path("benchmark_res/default_name"))
     bench_group.add_argument("--mode", type=Mode, default=Mode.TRAIN, choices=list(Mode))
@@ -107,29 +133,16 @@ def parse_args() -> tuple[ModelConfig, BenchConfig]:
     bench_group.add_argument("--grad_clip", type=float, default=1.0)
     bench_group.add_argument("--torch_seed", type=int, default=45)
 
+
+def parse_args() -> tuple[ModelConfig, BenchConfig]:
+    parser = argparse.ArgumentParser(description="Transformer Language Model Benchmark")
+
+    setup_model_args(parser)
+    setup_bench_args(parser)
+
     args = parser.parse_args()
 
-    # parse model size
-    size_key = args.model_size.lower()
-    preset = MODEL_SIZES[size_key]
-    num_layers = args.num_layers if args.num_layers is not None else preset["num_layers"]
-    d_model = args.d_model if args.d_model is not None else preset["d_model"]
-    num_heads = args.num_heads if args.num_heads is not None else preset["num_heads"]
-    d_ff = args.d_ff if args.d_ff is not None else preset["d_ff"]
-    print(f"--> Using Model Size: {size_key} (layers={num_layers}, d_model={d_model}, heads={num_heads}, d_ff={d_ff})")
-
-    # dataclass
-    model_cfg = ModelConfig(
-        vocab_size=args.vocab_size,
-        context_length=args.context_length,
-        num_layers=num_layers,
-        d_model=d_model,
-        num_heads=num_heads,
-        d_ff=d_ff,
-        rope_theta=args.rope_theta,
-        device=args.device,
-        dtype=args.dtype,
-    )
+    model_cfg = create_model_config(args)
     bench_cfg = BenchConfig(
         res_dir=args.res_dir,
         mode=args.mode,
@@ -148,8 +161,5 @@ def parse_args() -> tuple[ModelConfig, BenchConfig]:
         grad_clip=args.grad_clip,
         torch_seed=args.torch_seed,
     )
-
-    # validate
-    model_cfg.validate()
 
     return model_cfg, bench_cfg

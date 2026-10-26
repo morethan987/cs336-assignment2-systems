@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 
+from cs336_systems.distribute import NaiveDDP
 from cs336_systems.triton_kernels import FlashAttention, FlashAttention_NoTriton
 
 
@@ -49,11 +50,10 @@ def get_ddp(module: torch.nn.Module) -> torch.nn.Module:
     Returns:
         Instance of a DDP class.
     """
-    # For example: return DDP(module)
-    raise NotImplementedError
+    return NaiveDDP(module)
 
 
-def ddp_on_after_backward(ddp_model: torch.nn.Module, optimizer: torch.optim.Optimizer):
+def ddp_on_after_backward(ddp_model: NaiveDDP, optimizer: torch.optim.Optimizer):
     """
     Code to run after the backward pass is completed, but before we take
     an optimizer step.
@@ -64,8 +64,7 @@ def ddp_on_after_backward(ddp_model: torch.nn.Module, optimizer: torch.optim.Opt
         optimizer: torch.optim.Optimizer
             Optimizer being used with the DDP-wrapped model.
     """
-    # For example: ddp_model.finish_gradient_synchronization()
-    raise NotImplementedError
+    return ddp_model.finish_grad_sync()
 
 
 def get_fsdp(module: torch.nn.Module, compute_dtype: torch.dtype | None = None) -> torch.nn.Module:

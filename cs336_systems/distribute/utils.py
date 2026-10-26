@@ -7,6 +7,8 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 
+from cs336_systems.utils import ModelConfig, create_model_config, setup_model_args
+
 UNITS = {
     "b": 1,
     "kb": 10**3,
@@ -26,6 +28,7 @@ class DCConfig:
     backend: str
     device: str
     data_size: str
+    batch_size: int
     master_addr: str
     master_port: str
     save_base_dir: Path
@@ -35,20 +38,22 @@ class DCConfig:
             raise ValueError("NCCL backend does not support CPU tensors.")
 
 
-def parse_args() -> DCConfig:
-    parser = argparse.ArgumentParser(description="Distributed Communication Benchmark")
-    parser.add_argument("--world_size", type=int, default=2)
-    parser.add_argument("--steps", type=int, default=10)
-    parser.add_argument("--warm_up", type=int, default=5)
-    parser.add_argument("--backend", type=str, default="gloo", choices=["gloo", "nccl"])
-    parser.add_argument("--device", type=str, default="cpu", choices=["cuda", "cpu"])
-    parser.add_argument("--data_size", type=str, default="1MB", help="e.g. 1MB, 10MB, 100MB, 1GB")
-    parser.add_argument("--master_addr", type=str, default="localhost")
-    parser.add_argument("--master_port", type=str, default="29500")
-    parser.add_argument("--save_base_dir", type=Path, default="distributed_res")
+def setup_dc_benchmark_args(parser: argparse.ArgumentParser):
+    """Inject args of distributed communicationg"""
+    group = parser.add_argument_group("Distributed Communication Benchmark Args")
+    group.add_argument("--world_size", type=int, default=2)
+    group.add_argument("--steps", type=int, default=10)
+    group.add_argument("--warm_up", type=int, default=5)
+    group.add_argument("--backend", type=str, default="gloo", choices=["gloo", "nccl"])
+    group.add_argument("--device", type=str, default="cpu", choices=["cuda", "cpu"])
+    group.add_argument("--data_size", type=str, default="1MB", help="e.g. 1MB, 10MB, 100MB, 1GB")
+    group.add_argument("--batch_size", type=int, default=4)
+    group.add_argument("--master_addr", type=str, default="localhost")
+    group.add_argument("--master_port", type=str, default="29500")
+    group.add_argument("--save_base_dir", type=Path, default="distributed_res")
 
-    args = parser.parse_args()
 
+def create_dc_config(args: argparse.Namespace) -> DCConfig:
     dc_cfg = DCConfig(
         world_size=args.world_size,
         steps=args.steps,
@@ -56,12 +61,24 @@ def parse_args() -> DCConfig:
         backend=args.backend,
         device=args.device,
         data_size=args.data_size,
+        batch_size=args.batch_size,
         master_addr=args.master_addr,
         master_port=args.master_port,
         save_base_dir=args.save_base_dir,
     )
     dc_cfg.check()
     return dc_cfg
+
+
+def generate_data(model_cfg: ModelConfig, dc_cfg: DCConfig) -> tuple[torch.Tensor, torch.Tensor]:
+    tks = torch.randint(
+        0,
+        model_cfg.vocab_size,
+        (dc_cfg.batch_size, model_cfg.context_length + 1),
+        device=model_cfg.device,
+        dtype=torch.int,
+    )
+    return tks[:, :-1], tks[:, 1:]
 
 
 def get_tensor_size(size_str: str) -> int:

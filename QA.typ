@@ -1573,3 +1573,20 @@ if __name__ == "__main__":
 
   Small-payload transfers (1 MB) reside in a latency-bound regime where execution time remains fixed at approximately 0.18 ms regardless of GPU count, dominated by CUDA kernel launch and NCCL synchronization overheads. For larger payloads (100 MB to 1 GB), communication shifts into a bandwidth-bound regime where total data volume dictates runtime. Crucially, as the GPU count scales from 2 to 6 on 1 GB tensors, the effective bus bandwidth degrades sharply from 52.05 GB/s down to 22.18 GB/s (latency quadrupling from 20.6 ms to 80.7 ms). This may caused by hardware topology which does not bypass the CPU (UPI/PCIe).
 ]
+
+== Naive DDP
+
+Implement the naive distributed data parallel.
+
+*Deliverable*: Implement a naïve form of distributed data parallel training that all-reduces individual parameter gradients after the backward pass. To test your implementation, implement `[adapters.get_ddp]` and (optionally) `[adapters.ddp_on_after_backward]` , then run `uv run pytest tests/test_ddp.py`.
+
+#response[Success. See `NaiveDDP` class in `./cs336_systems/distribute/ddp.py`]
+
+== Naive DDP Benchmarking
+
+In this naive DDP implementation, parameter gradients are individually all-reduced across ranks after each backward pass. To better understand the overhead of data parallel training, create a script to benchmark your previously-implemented language model when trained with this naive implementation of DDP. Measure the total time per training step and the proportion of time spent on communicating gradients. Collect measurements in the single-node setting (1 node and 2 GPUs) for the `xl` model size described in @model-specs.
+
+*Deliverable*: A description of your benchmarking setup, along with the measured time per training iteration and time spent communicating gradients for each setting.
+
+#response[]
+

@@ -1,3 +1,4 @@
+import argparse
 import json
 import timeit
 from dataclasses import asdict
@@ -7,7 +8,8 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
-from utils import DCConfig, get_tensor_size, parse_args, setup, sync
+
+from cs336_systems.distribute.utils import DCConfig, create_dc_config, get_tensor_size, setup, setup_dc_benchmark_args, sync
 
 
 def communicate(rank: int, cfg: DCConfig, exp_dir: Path):
@@ -67,6 +69,16 @@ def main(cfg: DCConfig) -> None:
 
     # run
     mp.spawn(fn=communicate, args=(cfg, exp_dir), nprocs=cfg.world_size, join=True)
+
+
+def parse_args() -> DCConfig:
+    parser = argparse.ArgumentParser(description="Simple Single Node Distributed Communication Benchmark")
+    setup_dc_benchmark_args(parser)
+
+    args = parser.parse_args()
+
+    dc_cfg = create_dc_config(args)
+    return dc_cfg
 
 
 if __name__ == "__main__":
