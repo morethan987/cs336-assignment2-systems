@@ -1,12 +1,10 @@
-import argparse
 import enum
-from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
-import torch
 from cs336_basics.train_loop import ModelConfig
 from cs336_basics.train_loop.utils import parse_dtype
+from pydantic import BaseModel, Field, field_validator
 
 from cs336_systems.patch import PatchSpec, parse_patch_spec
 
@@ -24,12 +22,9 @@ def export_typst(
     if caption:
         styler.set_caption(caption)
     styler.format(precision=precision)
-
     typst_code = styler.to_typst()
-
     if output_path:
         Path(output_path).write_text(typst_code, encoding="utf-8")
-
     return typst_code
 
 
@@ -41,123 +36,68 @@ MODEL_SIZES = {
     "10b": {"d_model": 4608, "d_ff": 12288, "num_layers": 50, "num_heads": 36},
 }
 
-MODEL_NAMES = {v["d_model"]: k for k, v in MODEL_SIZES.items()}
-
 
 class Mode(enum.StrEnum):
     TRAIN = "train"
     INFER = "infer"
 
-    def __str__(self):
-        return self.value
+
+class ModelArgs(BaseModel):
+    """Model args and overlapping method"""
+
+    model_size: str = Field(default="small", description="Choices: small, medium, large, xl, 10b")
+    vocab_size: int = Field(default=10000)
+    context_length: int = Field(default=512)
+    num_layers: int | None = Field(default=None, description="Override num_layers")
+    d_model: int | None = Field(default=None, description="Override d_model")
+    num_heads: int | None = Field(default=None, description="Override num_heads")
+    d_ff: int | None = Field(default=None, description="Override d_ff")
+    rope_theta: float = Field(default=10000.0)
+    dtype: str = Field(default="bfloat16", description="bfloat16, float32, float16")
+
+    def build_model_config(self) -> ModelConfig:
+        size_key = self.model_size.lower()
+        preset = MODEL_SIZES[size_key]
+        num_layers = self.num_layers if self.num_layers is not None else preset["num_layers"]
+        d_model = self.d_model if self.d_model is not None else preset["d_model"]
+        num_heads = self.num_heads if self.num_heads is not None else preset["num_heads"]
+        d_ff = self.d_ff if self.d_ff is not None else preset["d_ff"]
+
+        torch_dtype = parse_dtype(self.dtype)
+
+        model_cfg = ModelConfig(
+            vocab_size=self.vocab_size,
+            context_length=self.context_length,
+            num_layers=num_layers,
+            d_model=d_model,
+            num_heads=num_heads,
+            d_ff=d_ff,
+            rope_theta=self.rope_theta,
+            dtype=torch_dtype,
+        )
+        model_cfg.validate()
+        return model_cfg
 
 
-@dataclass
-class BenchConfig:
-    res_dir: Path
-    mode: Mode
-    profilers: list[str]
-    patches: list[PatchSpec]
-    steps: int
-    warm_up: int
-    jit_compile: bool
-    unit_ms: bool
-    use_mixed_precision: bool
-    batch_size: int
-    lr: float
-    weight_decay: float
-    eps: float
-    grad_clip: float
-    torch_seed: int
-    betas: tuple[float, float] = (0.9, 0.95)
+class BenchConfig(BaseModel):
+    res_dir: Path = Field(default=Path("benchmark_res/default_name"))
+    mode: Mode = Field(default=Mode.TRAIN)
+    profilers: list[str] = Field(default_factory=lambda: ["timing"])
+    patches: list[PatchSpec] = Field(default_factory=list, description="e.g. 'att, recompute:group_size=4'")
+    steps: int = Field(default=10)
+    warm_up: int = Field(default=5)
+    jit_compile: bool = Field(default=False)
+    unit_ms: bool = Field(default=True)
+    use_mixed_precision: bool = Field(default=False)
+    batch_size: int = Field(default=4)
+    lr: float = Field(default=1.5e-3)
+    weight_decay: float = Field(default=0.1)
+    eps: float = Field(default=1e-8)
+    betas: tuple[float, float] = Field(default=(0.9, 0.95))
+    grad_clip: float = Field(default=1.0)
+    torch_seed: int = Field(default=45)
 
-
-def setup_model_args(parser: argparse.ArgumentParser):
-    """Inject args of model"""
-    group = parser.add_argument_group("Model Arguments")
-    group.add_argument("--model_size", type=str, default="small", choices=["small", "medium", "large", "xl", "10B", "10b"])
-    group.add_argument("--vocab_size", type=int, default=10000)
-    group.add_argument("--context_length", type=int, default=512)
-    group.add_argument("--num_layers", type=int, default=None, help="Override num_layers")
-    group.add_argument("--d_model", type=int, default=None, help="Override d_model")
-    group.add_argument("--num_heads", type=int, default=None, help="Override num_heads")
-    group.add_argument("--d_ff", type=int, default=None, help="Override d_ff")
-    group.add_argument("--rope_theta", type=float, default=10000.0)
-    group.add_argument("--dtype", type=parse_dtype, default=torch.bfloat16)
-
-
-def create_model_config(args: argparse.Namespace) -> ModelConfig:
-    """Parse and construct `ModelConfig`"""
-    size_key = args.model_size.lower()
-    preset = MODEL_SIZES[size_key]
-    num_layers = args.num_layers if args.num_layers is not None else preset["num_layers"]
-    d_model = args.d_model if args.d_model is not None else preset["d_model"]
-    num_heads = args.num_heads if args.num_heads is not None else preset["num_heads"]
-    d_ff = args.d_ff if args.d_ff is not None else preset["d_ff"]
-
-    print(f"--> Using Model Size: {size_key} (layers={num_layers}, d_model={d_model}, heads={num_heads}, d_ff={d_ff})")
-
-    model_cfg = ModelConfig(
-        vocab_size=args.vocab_size,
-        context_length=args.context_length,
-        num_layers=num_layers,
-        d_model=d_model,
-        num_heads=num_heads,
-        d_ff=d_ff,
-        rope_theta=args.rope_theta,
-        dtype=args.dtype,
-    )
-    model_cfg.validate()
-    return model_cfg
-
-
-def setup_bench_args(parser: argparse.ArgumentParser):
-    """Inject args of benchmark"""
-    bench_group = parser.add_argument_group("Benchmark Arguments")
-    bench_group.add_argument("--res_dir", type=Path, default=Path("benchmark_res/default_name"))
-    bench_group.add_argument("--mode", type=Mode, default=Mode.TRAIN, choices=list(Mode))
-    bench_group.add_argument("--profilers", type=lambda s: [item.strip() for item in s.split(",")], default=["timing"])
-    bench_group.add_argument("--steps", type=int, required=True)
-    bench_group.add_argument("--warm_up", type=int, required=True)
-    bench_group.add_argument("--jit_compile", action="store_true", default=False)
-    bench_group.add_argument("--use_mixed_precision", action="store_true", default=False)
-    bench_group.add_argument("--patches", type=parse_patch_spec, default=[])
-    bench_group.add_argument("--no_unit_ms", dest="unit_ms", action="store_false", default=True)
-    bench_group.add_argument("--batch_size", type=int, default=4)
-    bench_group.add_argument("--lr", type=float, default=1.5e-3)
-    bench_group.add_argument("--weight_decay", type=float, default=0.1)
-    bench_group.add_argument("--eps", type=float, default=1e-8)
-    bench_group.add_argument("--betas", type=float, default=(0.9, 0.95), nargs=2)
-    bench_group.add_argument("--grad_clip", type=float, default=1.0)
-    bench_group.add_argument("--torch_seed", type=int, default=45)
-
-
-def parse_args() -> tuple[ModelConfig, BenchConfig]:
-    parser = argparse.ArgumentParser(description="Transformer Language Model Benchmark")
-
-    setup_model_args(parser)
-    setup_bench_args(parser)
-
-    args = parser.parse_args()
-
-    model_cfg = create_model_config(args)
-    bench_cfg = BenchConfig(
-        res_dir=args.res_dir,
-        mode=args.mode,
-        profilers=args.profilers,
-        patches=args.patches,
-        steps=args.steps,
-        warm_up=args.warm_up,
-        jit_compile=args.jit_compile,
-        unit_ms=args.unit_ms,
-        use_mixed_precision=args.use_mixed_precision,
-        batch_size=args.batch_size,
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-        eps=args.eps,
-        betas=tuple(args.betas),
-        grad_clip=args.grad_clip,
-        torch_seed=args.torch_seed,
-    )
-
-    return model_cfg, bench_cfg
+    @field_validator("patches", mode="before")
+    @classmethod
+    def parse_patch_list(cls, v):
+        return parse_patch_spec(v) if isinstance(v, str) else v

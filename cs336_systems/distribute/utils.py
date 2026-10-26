@@ -1,11 +1,11 @@
-import argparse
 import os
 import re
-from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import torch
 import torch.distributed as dist
+from pydantic import BaseModel, Field, model_validator
 
 from cs336_systems.distribute.ddp import DDP_REGISTRY
 from cs336_systems.utils import ModelConfig
@@ -21,57 +21,26 @@ UNITS = {
 }
 
 
-@dataclass
-class DCConfig:
-    world_size: int
-    steps: int
-    warm_up: int
-    backend: str
-    device: str
-    data_size: str
-    batch_size: int
-    ddp_type: str
-    master_addr: str
-    master_port: str
-    save_base_dir: Path
+class DCConfig(BaseModel):
+    world_size: int = Field(default=2, description="Number of distributed ranks")
+    steps: int = Field(default=10, description="Benchmark timing iterations")
+    warm_up: int = Field(default=5, description="Warmup iterations")
+    backend: Literal["gloo", "nccl"] = Field(default="gloo", description="Communication backend")
+    device: Literal["cuda", "cpu"] = Field(default="cpu", description="Target device")
+    data_size: str = Field(default="1MB", description="e.g. 1MB, 10MB, 100MB, 1GB")
+    batch_size: int = Field(default=4, description="Batch size")
+    ddp_type: str = Field(default="naive", description=f"Choices: {list(DDP_REGISTRY.keys())}")
+    master_addr: str = Field(default="localhost", description="Master IP address")
+    master_port: str = Field(default="29500", description="Master port")
+    save_base_dir: Path = Field(default=Path("distributed_res"), description="Base directory to save results")
 
-    def check(self):
+    @model_validator(mode="after")
+    def validate_config(self):
         if self.device == "cpu" and self.backend == "nccl":
             raise ValueError("NCCL backend does not support CPU tensors.")
-
-
-def setup_dc_benchmark_args(parser: argparse.ArgumentParser):
-    """Inject args of distributed communicationg"""
-    group = parser.add_argument_group("Distributed Communication Benchmark Args")
-    group.add_argument("--world_size", type=int, default=2)
-    group.add_argument("--steps", type=int, default=10)
-    group.add_argument("--warm_up", type=int, default=5)
-    group.add_argument("--backend", type=str, default="gloo", choices=["gloo", "nccl"])
-    group.add_argument("--device", type=str, default="cpu", choices=["cuda", "cpu"])
-    group.add_argument("--data_size", type=str, default="1MB", help="e.g. 1MB, 10MB, 100MB, 1GB")
-    group.add_argument("--batch_size", type=int, default=4)
-    group.add_argument("--ddp_type", type=str, default="naive", choices=list(DDP_REGISTRY.keys()))
-    group.add_argument("--master_addr", type=str, default="localhost")
-    group.add_argument("--master_port", type=str, default="29500")
-    group.add_argument("--save_base_dir", type=Path, default="distributed_res")
-
-
-def create_dc_config(args: argparse.Namespace) -> DCConfig:
-    dc_cfg = DCConfig(
-        world_size=args.world_size,
-        steps=args.steps,
-        warm_up=args.warm_up,
-        backend=args.backend,
-        device=args.device,
-        data_size=args.data_size,
-        batch_size=args.batch_size,
-        ddp_type=args.ddp_type,
-        master_addr=args.master_addr,
-        master_port=args.master_port,
-        save_base_dir=args.save_base_dir,
-    )
-    dc_cfg.check()
-    return dc_cfg
+        if self.ddp_type not in DDP_REGISTRY:
+            raise ValueError(f"Invalid ddp_type: {self.ddp_type}. Available: {list(DDP_REGISTRY.keys())}")
+        return self
 
 
 def generate_data(model_cfg: ModelConfig, dc_cfg: DCConfig, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:

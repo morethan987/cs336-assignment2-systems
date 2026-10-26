@@ -1,15 +1,14 @@
-import argparse
 import json
 import timeit
-from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
+import tyro
 
-from cs336_systems.distribute.utils import DCConfig, create_dc_config, get_tensor_size, setup, setup_dc_benchmark_args, sync
+from cs336_systems.distribute.utils import DCConfig, get_tensor_size, setup, sync
 
 
 def communicate(rank: int, cfg: DCConfig, exp_dir: Path):
@@ -49,38 +48,23 @@ def communicate(rank: int, cfg: DCConfig, exp_dir: Path):
             "timings_by_rank": timings,
         }
 
-        with open(exp_dir / "results.json", "w", encoding="utf-8") as f:
-            json.dump(results, f, indent=4)
-
+        # save results
+        (exp_dir / "results.json").write_text(json.dumps(results, indent=4))
         print(f"Artifacts saved to: {exp_dir.resolve()}")
 
     dist.destroy_process_group()
 
 
 def main(cfg: DCConfig) -> None:
-    # timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    exp_dir = cfg.save_base_dir / f"{timestamp}_{cfg.world_size}_{cfg.backend}_{cfg.data_size}"
+    exp_dir = cfg.save_base_dir / f"ws{cfg.world_size}_{cfg.backend}_{cfg.data_size}_{timestamp}"
     exp_dir.mkdir(parents=True, exist_ok=True)
 
-    # save args
-    with open(exp_dir / "args.json", "w", encoding="utf-8") as f:
-        json.dump(asdict(cfg), f, indent=4, default=str)
+    (exp_dir / "args.json").write_text(cfg.model_dump_json(indent=4))
 
-    # run
     mp.spawn(fn=communicate, args=(cfg, exp_dir), nprocs=cfg.world_size, join=True)
 
 
-def parse_args() -> DCConfig:
-    parser = argparse.ArgumentParser(description="Simple Single Node Distributed Communication Benchmark")
-    setup_dc_benchmark_args(parser)
-
-    args = parser.parse_args()
-
-    dc_cfg = create_dc_config(args)
-    return dc_cfg
-
-
 if __name__ == "__main__":
-    cfg = parse_args()
+    cfg = tyro.cli(DCConfig)
     main(cfg)

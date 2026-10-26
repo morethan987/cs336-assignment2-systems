@@ -1,20 +1,25 @@
-import argparse
 import json
-from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
+from typing import Annotated
 
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
+import tyro
 from cs336_basics.layers import TransformerLM, cross_entropy
 from cs336_basics.train_loop import AdamW
+from pydantic import BaseModel, Field
 from torch.profiler import ProfilerActivity, profile, record_function
 
 from cs336_systems.distribute.ddp import BaseDDP, get_ddp_cls
-from cs336_systems.distribute.utils import DCConfig, create_dc_config, generate_data, setup, setup_dc_benchmark_args, sync
-from cs336_systems.utils import ModelConfig, create_model_config, setup_model_args
+from cs336_systems.distribute.utils import DCConfig, generate_data, setup, sync
+from cs336_systems.utils import ModelArgs, ModelConfig
 
+
+class DDPBenchmarkArgs(BaseModel):
+    dc: Annotated[DCConfig, tyro.conf.OmitArgPrefixes] = Field(default_factory=DCConfig)
+    model: Annotated[ModelArgs, tyro.conf.OmitArgPrefixes] = Field(default_factory=ModelArgs)
 
 def merge_intervals(
     intervals: list[tuple[float, float]],
@@ -215,35 +220,20 @@ def run_benchmark(rank: int, dc_cfg: DCConfig, model_cfg: ModelConfig, exp_dir: 
 
     dist.destroy_process_group()
 
-
-def main(dc_cfg: DCConfig, model_cfg: ModelConfig) -> None:
+def main(args: DDPBenchmarkArgs) -> None:
+    dc_cfg = args.dc
+    model_cfg = args.model.build_model_config()
     ddp_cls = get_ddp_cls(dc_cfg.ddp_type)
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    exp_dir = dc_cfg.save_base_dir / f"{timestamp}_{dc_cfg.world_size}_{dc_cfg.backend}_{dc_cfg.ddp_type}_ddp_cmcp_overlap"
+    exp_dir = dc_cfg.save_base_dir / f"{timestamp}_ws{dc_cfg.world_size}_{dc_cfg.backend}_{dc_cfg.ddp_type}_{args.model.model_size}_overlap"
     exp_dir.mkdir(parents=True, exist_ok=True)
 
-    # save config
-    combined_args = {
-        "dc_config": asdict(dc_cfg),
-        "model_config": asdict(model_cfg),
-    }
-    with open(exp_dir / "args.json", "w", encoding="utf-8") as f:
-        json.dump(combined_args, f, indent=4, default=str)
+    (exp_dir / "args.json").write_text(args.model_dump_json(indent=4))
 
     mp.spawn(fn=run_benchmark, args=(dc_cfg, model_cfg, exp_dir, ddp_cls), nprocs=dc_cfg.world_size, join=True)
 
 
-def parse_args() -> tuple[DCConfig, ModelConfig]:
-    parser = argparse.ArgumentParser(description="Naive DDP Communication-Computation Overlap Benchmark")
-    setup_model_args(parser)
-    setup_dc_benchmark_args(parser)
-    args = parser.parse_args()
-
-    model_cfg = create_model_config(args)
-    dc_cfg = create_dc_config(args)
-    return dc_cfg, model_cfg
-
-
 if __name__ == "__main__":
-    dc_cfg, model_cfg = parse_args()
-    main(dc_cfg, model_cfg)
+    args = tyro.cli(DDPBenchmarkArgs)
+    main(args)

@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-import enum
 import json
 import traceback
 from collections.abc import Callable
 from contextlib import ExitStack, nullcontext
 from dataclasses import asdict
-from pathlib import Path
-from typing import cast
+from typing import Annotated, cast
 
 import torch
+import tyro
 from cs336_basics.layers import TransformerLM, cross_entropy
 from cs336_basics.train_loop import AdamW, ModelConfig, gradient_clipping
+from pydantic import BaseModel, Field
 from tqdm import tqdm
 
 from cs336_systems.observers import create_observers
@@ -23,7 +23,12 @@ from cs336_systems.observers.base import (
     BaseObserver,
 )
 from cs336_systems.patch import PATCH_REGISTRY
-from cs336_systems.utils import BenchConfig, Mode, parse_args
+from cs336_systems.utils import BenchConfig, Mode, ModelArgs
+
+
+class BenchmarkArgs(BaseModel):
+    model: Annotated[ModelArgs, tyro.conf.OmitArgPrefixes] = Field(default_factory=ModelArgs)
+    bench: Annotated[BenchConfig, tyro.conf.OmitArgPrefixes] = Field(default_factory=BenchConfig)
 
 
 class BenchmarkHarness:
@@ -84,16 +89,11 @@ class BenchmarkHarness:
         res_dir = self.bench_cfg.res_dir
         res_dir.mkdir(parents=True, exist_ok=True)
 
-        with open(res_dir / "args.json", "w", encoding="utf-8") as f:
-
-            def serialize(obj):
-                if isinstance(obj, (torch.device, torch.dtype, Path)):
-                    return str(obj)
-                if isinstance(obj, enum.Enum):
-                    return obj.value
-                raise TypeError(f"Type {type(obj)} not serializable")
-
-            json.dump({"model_cfg": asdict(self.model_cfg), "bench_cfg": asdict(self.bench_cfg)}, f, indent=4, default=serialize)
+        payload = {
+            "model_cfg": asdict(self.model_cfg),
+            "bench_cfg": self.bench_cfg.model_dump(mode="json"),
+        }
+        (res_dir / "args.json").write_text(json.dumps(payload, indent=4, default=str))
 
     def _save_crash_report(self, phase: str, step: int, exc: BaseException) -> None:
         crash_data = {
@@ -253,6 +253,7 @@ class BenchmarkHarness:
 
 
 if __name__ == "__main__":
-    mcfg, bcfg = parse_args()
+    args = tyro.cli(BenchmarkArgs)
+    mcfg, bcfg = args.model.build_model_config(), args.bench
     harness = BenchmarkHarness(mcfg, bcfg)
     harness.run()
