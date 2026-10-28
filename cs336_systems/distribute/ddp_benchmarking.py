@@ -21,6 +21,7 @@ class DDPBenchmarkArgs(BaseModel):
     dc: Annotated[DCConfig, tyro.conf.OmitArgPrefixes] = Field(default_factory=DCConfig)
     model: Annotated[ModelArgs, tyro.conf.OmitArgPrefixes] = Field(default_factory=ModelArgs)
 
+
 def merge_intervals(
     intervals: list[tuple[float, float]],
 ) -> list[tuple[float, float]]:
@@ -76,7 +77,7 @@ def analyze_trace_json(trace_path: Path) -> dict[str, float]:
             cat = event.get("cat", "")
             name = event.get("name", "")
 
-            if cat in ["kernel", "gpu_user_annotation"]:
+            if cat == "kernel":
                 start = float(event["ts"])
                 end = start + float(event["dur"])
 
@@ -149,7 +150,7 @@ def run_benchmark(rank: int, dc_cfg: DCConfig, model_cfg: ModelConfig, exp_dir: 
     if dc_cfg.device == "cuda":
         activities.append(ProfilerActivity.CUDA)
 
-    with profile(activities=activities, record_shapes=False, profile_memory=False) as prof:
+    with profile(activities=activities, record_shapes=False, profile_memory=False, acc_events=True) as prof:
         start_event.record()
         for _ in range(dc_cfg.steps):
             optimizer.zero_grad()
@@ -220,13 +221,14 @@ def run_benchmark(rank: int, dc_cfg: DCConfig, model_cfg: ModelConfig, exp_dir: 
 
     dist.destroy_process_group()
 
+
 def main(args: DDPBenchmarkArgs) -> None:
     dc_cfg = args.dc
     model_cfg = args.model.build_model_config()
     ddp_cls = get_ddp_cls(dc_cfg.ddp_type)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    exp_dir = dc_cfg.save_base_dir / f"{timestamp}_ws{dc_cfg.world_size}_{dc_cfg.backend}_{dc_cfg.ddp_type}_{args.model.model_size}_overlap"
+    exp_dir = dc_cfg.save_base_dir / f"ws{dc_cfg.world_size}_{dc_cfg.backend}_{dc_cfg.ddp_type}_{args.model.model_size}_overlap_{timestamp}"
     exp_dir.mkdir(parents=True, exist_ok=True)
 
     (exp_dir / "args.json").write_text(args.model_dump_json(indent=4))

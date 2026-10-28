@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 import torch
 import torch.distributed as dist
 from torch import nn
+from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
 
 
 class BaseDDP(nn.Module, ABC):
@@ -13,7 +14,8 @@ class BaseDDP(nn.Module, ABC):
         for p in self.module.parameters():
             dist.broadcast(p.data, src=0)
 
-        self.forward = self.module.forward
+    def __call__(self, *args, **kwargs):
+        return self.module(*args, **kwargs)
 
     @abstractmethod
     def finish_grad_sync(self) -> None:
@@ -25,6 +27,19 @@ class NaiveDDP(BaseDDP):
         for p in self.module.parameters():
             if p.grad is not None:
                 dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
+
+
+class FlatOnlyDDP(BaseDDP):
+    def finish_grad_sync(self) -> None:
+        grads = [p.grad for p in self.module.parameters() if p.grad is not None]
+        if not grads:
+            return
+
+        flat_grad: torch.Tensor = _flatten_dense_tensors(grads)
+        dist.all_reduce(flat_grad, op=dist.ReduceOp.AVG)
+
+        for g, synced_g in zip(grads, _unflatten_dense_tensors(flat_grad, grads)):
+            g.copy_(synced_g)
 
 
 class OverlappedDDP(BaseDDP):
@@ -50,6 +65,7 @@ class OverlappedDDP(BaseDDP):
 
 DDP_REGISTRY: dict[str, type[BaseDDP]] = {
     "naive": NaiveDDP,
+    "flatonly": FlatOnlyDDP,
     "overlapped": OverlappedDDP,
 }
 

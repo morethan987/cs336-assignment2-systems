@@ -1604,7 +1604,7 @@ In this naive DDP implementation, parameter gradients are individually all-reduc
     --dtype bfloat16
   ```
 
-  It is reasonable that overlapped ddp is faster when considering averaged step time. However, when we overlapping computation and communication, the actual communication overhead is 92.83 ms which is much higher than that of naive ddp (52.10 ms). Theoritically, All-Reduce is synchronous and each layer should wait for all GPU to be prepared. Communication is well aligned in naive ddp since almost all the communication is launched at the same time. But it is not true in overlapped ddp and the actual communication time should be the sum of data transport time and waiting time. Such a huge difference should be blamed to the accumulative affection between layers. When the previous layer is late, it should pay for that in every layer.
+  It is reasonable that overlapped ddp is faster when considering averaged step time. However, when we overlapping computation and communication, the actual communication overhead is 116.99 ms which is much higher than that of naive ddp (55.22 ms). Theoritically, All-Reduce is synchronous and each layer should wait for all GPU to be prepared. Communication is well aligned in naive ddp since almost all the communication is launched at the same time. But it is not true in overlapped ddp and the actual communication time should be the sum of data transport time and waiting time. Such a huge difference should be blamed to the accumulative affection between layers. When the previous layer is late, it should pay for that in every layer.
 
   #figure(
     caption: [Latency, communication overhead, and overlap ratio for DDP implementations on the `xl` model size across 2 GPUs on A100. Timed over 10 iterations after 5 warm-up steps. Naive DDP synchronizes gradients after backward completes, while Overlapped DDP triggers asynchronous All-Reduce per parameter hook.],
@@ -1636,15 +1636,15 @@ In this naive DDP implementation, parameter gradients are individually all-reduc
       table.hline(stroke: 0.6pt),
 
       // --- Naive DDP ---
-      table.cell(rowspan: 3)[*Naive DDP*\ (Baseline)], [Rank 0], [421.28], [47.42], [47.42], [11.26%], [0.00%],
-      [Rank 1], [421.28], [56.78], [56.78], [13.48%], [0.00%],
-      [*Avg*], [*421.28*], [*52.10*], [*52.10*], [*12.37%*], [*0.00%*],
+      table.cell(rowspan: 3)[*Naive DDP*\ (Baseline)], [Rank 0], [421.32], [61.14], [61.14], [14.51%], [0.00%],
+      [Rank 1], [421.59], [49.30], [49.30], [11.69%], [0.00%],
+      [*Avg*], [*421.45*], [*55.22*], [*55.22*], [*13.10%*], [*0.00%*],
       table.hline(stroke: 0.3pt),
 
       // --- Overlapped DDP ---
-      table.cell(rowspan: 3)[*Overlapped DDP*\ (Hook-based)], [Rank 0], [379.82], [119.62], [4.38], [31.49%], [96.34%],
-      [Rank 1], [379.73], [66.03], [3.37], [17.39%], [94.90%],
-      [*Avg*], [*379.77*], [*92.83*], [*3.87*], [*24.44%*], [*95.62%*],
+      table.cell(rowspan: 3)[*Overlapped DDP*\ (Hook-based)], [Rank 0], [399.45], [114.46], [10.66], [28.66%], [90.69%],
+      [Rank 1], [399.34], [119.51], [10.05], [29.93%], [91.59%],
+      [*Avg*], [*399.40*], [*116.99*], [*10.36*], [*29.29%*], [*91.14%*],
 
       // Bottom border
       table.hline(stroke: 1.2pt),
@@ -1652,3 +1652,59 @@ In this naive DDP implementation, parameter gradients are individually all-reduc
   ] <table-naive-ddp-bench>
 ]
 
+== Minimal DDP with Flat Gradients Benchmarking
+
+Modify your minimal DDP implementation to communicate a tensor with flattened gradients from all parameters. Compare its performance with the minimal DDP implementation that issues an all-reduce for each parameter tensor under the previously-used conditions (1 node with 2 GPUs, `xl` model size as described in @model-specs). To test your implementation, modify `[adapters.get_ddp]` and (optionally) `[adapters.ddp_on_after_backward]` , then run `uv run pytest tests/test_ddp.py`.
+
+*Deliverable*: The measured time per training iteration and time spent communicating gradients under distributed data parallel training with a single batched all-reduce call. 1-2 sentences comparing the results when batching vs. individually communicating gradients.
+
+#response[
+  Experiment settings is almost the same with last experiment, just set `ddp_type` to `flatonly`.
+
+  Flattening gradients into a contiguous buffer improves communication efficiency. In Naive DDP, triggering an individual All-Reduce for each parameter introduces severe kernel launch overhead and network latency from numerous small transfers, resulting in an average communication overhead of 55.22 ms (13.10% of total step time). In contrast, Flat-only DDP flattens all gradients into a single tensor before invoking a single collective All-Reduce call, cutting communication time down to 33.89 ms (8.26%) and reducing the average step time from 421.45 ms to 410.14 ms. Because synchronization is still triggered synchronously after the entire backward pass completes, the overlap ratio remains at 0.00%.
+
+  #figure(
+    caption: [Latency, communication overhead, and overlap ratio comparison between Naive DDP and Flat-only DDP on the `xl` model size across 2 GPUs on A100. Timed over 10 iterations after 5 warm-up steps. Naive DDP synchronizes each parameter tensor individually, while Flat-only DDP coalesces all gradients into a contiguous tensor before performing a single synchronous All-Reduce.],
+  )[
+    #set text(10pt)
+    #table(
+      columns: (auto,) * 7,
+      inset: (x: 6pt, y: 3.5pt),
+      align: center + horizon,
+      stroke: none,
+
+      // Top border
+      table.hline(stroke: 1.2pt),
+
+      // Header
+      table.header(
+        table.cell(rowspan: 2, align: center + horizon)[*DDP Variant*],
+        table.cell(rowspan: 2, align: center + horizon)[*Rank*],
+        table.cell(rowspan: 2, align: center + horizon)[*Step avg (ms)*],
+        table.cell(colspan: 2, align: center + bottom, inset: (bottom: 2pt))[*Comm Time (ms)*],
+        table.cell(rowspan: 2, align: center + horizon)[*Comm Overhead*],
+        table.cell(rowspan: 2, align: center + horizon)[*Overlap Ratio*],
+
+        // Sub-divider under Comm Time
+        table.hline(start: 3, end: 5, stroke: 0.4pt),
+
+        [*Actual*], [*Exposed*],
+      ),
+      table.hline(stroke: 0.6pt),
+
+      // --- Naive DDP ---
+      table.cell(rowspan: 3)[*Naive DDP*\ (Per-param)], [Rank 0], [421.32], [61.14], [61.14], [14.51%], [0.00%],
+      [Rank 1], [421.59], [49.30], [49.30], [11.69%], [0.00%],
+      [*Avg*], [*421.45*], [*55.22*], [*55.22*], [*13.10%*], [*0.00%*],
+      table.hline(stroke: 0.3pt),
+
+      // --- Flat-only DDP ---
+      table.cell(rowspan: 3)[*Flat-only DDP*\ (Single Buffer)], [Rank 0], [410.15], [33.42], [33.42], [8.15%], [0.00%],
+      [Rank 1], [410.14], [34.37], [34.37], [8.38%], [0.00%],
+      [*Avg*], [*410.14*], [*33.89*], [*33.89*], [*8.26%*], [*0.00%*],
+
+      // Bottom border
+      table.hline(stroke: 1.2pt),
+    )
+  ] <table-flatonly-ddp-bench>
+]
