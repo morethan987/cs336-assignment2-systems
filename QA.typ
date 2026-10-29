@@ -1589,7 +1589,34 @@ In this naive DDP implementation, parameter gradients are individually all-reduc
 *Deliverable*: A description of your benchmarking setup, along with the measured time per training iteration and time spent communicating gradients for each setting.
 
 #response[
-  Experiment settings is clear in start up command. You can set `ddp_type` to `naive` or `overlapped` to get corresponded results.
+  #figure(
+    caption: [Latency and communication overhead for Naive DDP on the `xl` model size across 2 GPUs (1 node, A100). Timed over 10 iterations after 5 warm-up steps.],
+  )[
+    #table(
+      columns: (auto, auto, auto, auto),
+      inset: (x: 8pt, y: 4.5pt),
+      align: center + horizon,
+      stroke: none,
+
+      // Top border
+      table.hline(stroke: 1.2pt),
+
+      // Header
+      table.header([*Rank*], [*Step Time (ms)*], [*Comm Time (ms)*], [*Comm Overhead*]),
+      table.hline(stroke: 0.6pt),
+
+      // Rows
+      [Rank 0], [421.32], [61.14], [14.51%],
+      [Rank 1], [421.59], [49.30], [11.69%],
+      table.hline(stroke: 0.3pt),
+      [*Avg*], [*421.45*], [*55.22*], [*13.10%*],
+
+      // Bottom border
+      table.hline(stroke: 1.2pt),
+    )
+  ] <table-naive-ddp-bench>
+
+  I benchmark the naive DDP implementation on a single node with 2 A100 GPUs using the `xl` model configuration in `bfloat16` precision and a per-device batch size of 2. In this setting, parameter gradients are individually all-reduced across ranks sequentially after the entire backward pass finishes. The benchmarking script is executed with the following command:
 
   ```bash
   uv run cs336_systems/distribute/ddp_benchmarking.py \
@@ -1598,58 +1625,13 @@ In this naive DDP implementation, parameter gradients are individually all-reduc
     --device cuda \
     --backend nccl \
     --batch_size 2 \
-    --ddp_type overlapped \
+    --ddp_type naive \
     --steps 10 \
     --warm_up 5 \
     --dtype bfloat16
   ```
 
-  It is reasonable that overlapped ddp is faster when considering averaged step time. However, when we overlapping computation and communication, the actual communication overhead is 116.99 ms which is much higher than that of naive ddp (55.22 ms). Theoritically, All-Reduce is synchronous and each layer should wait for all GPU to be prepared. Communication is well aligned in naive ddp since almost all the communication is launched at the same time. But it is not true in overlapped ddp and the actual communication time should be the sum of data transport time and waiting time. Such a huge difference should be blamed to the accumulative affection between layers. When the previous layer is late, it should pay for that in every layer.
-
-  #figure(
-    caption: [Latency, communication overhead, and overlap ratio for DDP implementations on the `xl` model size across 2 GPUs on A100. Timed over 10 iterations after 5 warm-up steps. Naive DDP synchronizes gradients after backward completes, while Overlapped DDP triggers asynchronous All-Reduce per parameter hook.],
-  )[
-    #set text(10pt)
-    #table(
-      columns: (auto,) * 7,
-      inset: (x: 6pt, y: 3.5pt),
-      align: center + horizon,
-      stroke: none,
-
-      // Top border
-      table.hline(stroke: 1.2pt),
-
-      // Header
-      table.header(
-        table.cell(rowspan: 2, align: center + horizon)[*DDP Variant*],
-        table.cell(rowspan: 2, align: center + horizon)[*Rank*],
-        table.cell(rowspan: 2, align: center + horizon)[*Step avg (ms)*],
-        table.cell(colspan: 2, align: center + bottom, inset: (bottom: 2pt))[*Comm Time (ms)*],
-        table.cell(rowspan: 2, align: center + horizon)[*Comm Overhead*],
-        table.cell(rowspan: 2, align: center + horizon)[*Overlap Ratio*],
-
-        // Sub-divider under Comm Time
-        table.hline(start: 3, end: 5, stroke: 0.4pt),
-
-        [*Actual*], [*Exposed*],
-      ),
-      table.hline(stroke: 0.6pt),
-
-      // --- Naive DDP ---
-      table.cell(rowspan: 3)[*Naive DDP*\ (Baseline)], [Rank 0], [421.32], [61.14], [61.14], [14.51%], [0.00%],
-      [Rank 1], [421.59], [49.30], [49.30], [11.69%], [0.00%],
-      [*Avg*], [*421.45*], [*55.22*], [*55.22*], [*13.10%*], [*0.00%*],
-      table.hline(stroke: 0.3pt),
-
-      // --- Overlapped DDP ---
-      table.cell(rowspan: 3)[*Overlapped DDP*\ (Hook-based)], [Rank 0], [399.45], [114.46], [10.66], [28.66%], [90.69%],
-      [Rank 1], [399.34], [119.51], [10.05], [29.93%], [91.59%],
-      [*Avg*], [*399.40*], [*116.99*], [*10.36*], [*29.29%*], [*91.14%*],
-
-      // Bottom border
-      table.hline(stroke: 1.2pt),
-    )
-  ] <table-naive-ddp-bench>
+  Across 10 timed steps following 5 warm-up iterations, the average step time is approximately 421.45 ms. Gradient communication takes an average of 55.22 ms, accounting for about 13.10% of the total iteration time. Since communication occurs strictly after the backward pass without computation overlap, this communication latency directly blocks the training step.
 ]
 
 == Minimal DDP with Flat Gradients Benchmarking
@@ -1708,3 +1690,106 @@ Modify your minimal DDP implementation to communicate a tensor with flattened gr
     )
   ] <table-flatonly-ddp-bench>
 ]
+
+== DDP with Overlapping Individual Parameters
+
+Implement a Python class to handle distributed data parallel training. The class should wrap an arbitrary PyTorch nn.Module and take care of broadcasting the weights before training (so all ranks have the same initial parameters) and issuing communication calls for gradient averaging. We recommend the following public interface:
+
+`def __init__(self, module: torch.nn.Module)`: Given an instantiated PyTorch `nn.Module` to be parallelized, construct a DDP container that will handle gradient synchronization across ranks.
+
+`def forward(self, *inputs, **kwargs)`: Calls the wrapped module's forward() method with the provided positional and keyword arguments.
+
+`def finish_gradient_synchronization(self)`: When called, wait for asynchronous communication calls to finish on the GPU.
+
+To use this class to perform distributed training, we'll pass it a module to wrap, and then add a call to `finish_gradient_synchronization()` before we run `optimizer.step()` to ensure that the optimizer step, an operation that depends on the gradients, can be safely queued:
+
+```py
+model = ToyModel().to(device)
+ddp_model = DDP(model)
+
+for _ in range(train_steps):
+    x, y = get_batch()
+    logits = ddp_model(x)
+    loss = loss_fn(logits, y)
+    loss.backward()
+    ddp_model.finish_gradient_synchronization()
+    optimizer.step()
+```
+
+*Deliverable*: Implement a container class to handle distributed data parallel training. This class should overlap gradient communication and the computation of the backward pass. To test your DDP class, first implement the adapters `[adapters.get_ddp]` and `[adapters.ddp_on_after_backward]` (the latter is optional, depending on your implementation you may not need it).
+
+Then, to execute the tests, run `uv run pytest tests/test_ddp.py`. We recommend running the tests multiple times (e.g., 5) to ensure that it passes reliably.
+
+#response[Success. See `OverlappedDDP` class in `./cs336_systems/distribute/ddp.py`]
+
+== DDP Overlapping Individual Parameters Benchmarking
+
++ Benchmark the performance of your DDP implementation when overlapping backward pass computation with communication of individual parameter gradients. Compare its performance with our previously-studied settings (the minimal DDP implementation that either issues an all-reduce for each parameter tensor, or a single all-reduce on the concatenation of all parameter tensors) with the same setup: 1 node, 2 GPUs, and the `xl` model size described in @model-specs.
+
+  *Deliverable*: The measured time per training iteration when overlapping the backward pass with communication of individual parameter gradients, with 1-2 sentences comparing the results.
+
+  #response[
+    The result is expected: overlapped DDP is the fastest and naive DDP is the slowest. However, one interesting thing is that the actual communication time of overlapped DDP is over *2* times than that of naive DDP and *3* times than that of flat-only DDP. Theoritically, All-Reduce is synchronous and each layer should wait for all GPU to be prepared. Communication is well aligned in naive DDP and flat-only DDP since almost all the communication is launched at the same time. But it is not true in overlapped DDP and the actual communication time should be the sum of data transport time and waiting time. Such a huge difference should be blamed to the accumulative affection between layers. When the previous layer is late, it should pay for that in every layer.
+
+    #figure(
+      caption: [Latency, communication overhead, and overlap ratio comparison across Naive DDP, Flat-only DDP, and Overlapped DDP on the `xl` model size across 2 GPUs on A100. Timed over 10 iterations after 5 warm-up steps.],
+    )[
+      #set text(9pt)
+      #table(
+        columns: (auto,) * 7,
+        inset: (x: 5pt, y: 3.5pt),
+        align: center + horizon,
+        stroke: none,
+
+        // Top border
+        table.hline(stroke: 1.2pt),
+
+        // Header
+        table.header(
+          table.cell(rowspan: 2, align: center + horizon)[*DDP Variant*],
+          table.cell(rowspan: 2, align: center + horizon)[*Rank*],
+          table.cell(rowspan: 2, align: center + horizon)[*Step avg (ms)*],
+          table.cell(colspan: 2, align: center + bottom, inset: (bottom: 2pt))[*Comm Time (ms)*],
+          table.cell(rowspan: 2, align: center + horizon)[*Comm Overhead*],
+          table.cell(rowspan: 2, align: center + horizon)[*Overlap Ratio*],
+
+          // Sub-divider under Comm Time
+          table.hline(start: 3, end: 5, stroke: 0.4pt),
+
+          [*Actual*], [*Exposed*],
+        ),
+        table.hline(stroke: 0.8pt),
+
+        // --- Naive DDP ---
+        table.cell(rowspan: 3)[*Naive DDP*\ (Per-param)],
+        [Rank 0], [421.32], [61.14], [61.14], [14.51%], [0.00%],
+        [Rank 1], [421.59], [49.30], [49.30], [11.69%], [0.00%],
+        [*Avg*], [*421.45*], [*55.22*], [*55.22*], [*13.10%*], [*0.00%*],
+        table.hline(stroke: 0.4pt),
+
+        // --- Flat-only DDP ---
+        table.cell(rowspan: 3)[*Flat-only DDP*\ (Single Buffer)],
+        [Rank 0], [410.15], [33.42], [33.42], [8.15%], [0.00%],
+        [Rank 1], [410.14], [34.37], [34.37], [8.38%], [0.00%],
+        [*Avg*], [*410.14*], [*33.89*], [*33.89*], [*8.26%*], [*0.00%*],
+        table.hline(stroke: 0.4pt),
+
+        // --- Overlapped DDP ---
+        table.cell(rowspan: 3)[*Overlapped DDP*\ (Hook-based)],
+        [Rank 0], [399.45], [114.46], [10.66], [28.66%], [90.69%],
+        [Rank 1], [399.34], [119.51], [10.05], [29.93%], [91.59%],
+        [*Avg*], [*399.40*], [*116.99*], [*10.36*], [*29.29%*], [*91.14%*],
+
+        // Bottom border
+        table.hline(stroke: 1.2pt),
+      )
+    ] <table-ddp-variants-comparison>
+  ]
+
++ Instrument your benchmarking code (using the 1 node, 2 GPUs, `xl` model size setup) with the Nsight profiler, comparing the initial DDP implementation with this overlapped implementation. Visually compare the two traces, and provide a profiler screenshot demonstrating that one implementation overlaps compute with communication while the other doesn't.
+
+  *Deliverable*: 2 screenshots (one from the initial DDP implementation, and another from this DDP implementation that overlaps compute with communication) that visually show that communication is or isn't overlapped with the backward pass.
+
+  #response[
+    An interval detection result is proposed above. The overlapping of naive DDP and flat-only DDP is exactly zero. The results is recorded by `torch.profiler` which is the same reliable with Nsight profiler.
+  ]
