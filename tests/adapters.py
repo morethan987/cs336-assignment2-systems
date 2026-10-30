@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from cs336_systems.distribute import FlatOnlyDDP, NaiveDDP, OverlappedDDP
+from cs336_systems.distribute import FlatOnlyDDP, NaiveDDP, OverlappedDDP, BucketedDDP, ZeroCopyBucketedDDP
 from cs336_systems.triton_kernels import FlashAttention, FlashAttention_NoTriton
 
 
@@ -50,7 +50,7 @@ def get_ddp(module: torch.nn.Module) -> torch.nn.Module:
     Returns:
         Instance of a DDP class.
     """
-    return FlatOnlyDDP(module)
+    return ZeroCopyBucketedDDP(module)
 
 
 def ddp_on_after_backward(ddp_model: NaiveDDP, optimizer: torch.optim.Optimizer):
