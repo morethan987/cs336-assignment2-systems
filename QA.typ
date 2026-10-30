@@ -1793,3 +1793,31 @@ Then, to execute the tests, run `uv run pytest tests/test_ddp.py`. We recommend 
   #response[
     An interval detection result is proposed above. The overlapping of naive DDP and flat-only DDP is exactly zero. The results is recorded by `torch.profiler` which is the same reliable with Nsight profiler.
   ]
+
+= Optimizer State Sharding
+
+== Optimizer State Sharding Implementation
+
+Implement a Python class to handle optimizer state sharding. The class should wrap an arbitrary input PyTorch `optim.Optimizer` and take care of synchronizing updated parameters after each optimizer step. We recommend the following public interface:
+
+`def __init__(self, params, optimizer_cls: Type[Optimizer], **kwargs: Any)`: Initializes the sharded state `optimizer.params` is a collection of parameters to be optimized (or parameter groups, in case the user wants to use different hyperparameters, such as learning rates, for different parts of the model); these parameters will be sharded across all the ranks. The `optimizer_cls` parameter specifies the type of optimizer to be wrapped (e.g., `optim.AdamW`). Finally, any remaining keyword arguments are forwarded to the constructor of the `optimizer_cls`. Make sure to call the `torch.optim.Optimizer` super-class constructor in this method.
+
+`def step(self, closure, **kwargs)`: Calls the wrapped optimizer's `step()` method with the provided closure and keyword arguments. After updating the parameters, synchronize with the other ranks.
+
+`def add_param_group(self, param_group: dict[str, Any])`: This method should add a parameter group to the sharded optimizer. This is called during construction of the sharded optimizer by the super-class constructor and may also be called during training (e.g., for gradually unfreezing layers in a model). As a result, this method should handle assigning the model's parameters among the ranks.
+
+*Deliverable*: Implement a container class to handle optimizer state sharding. To test your sharded optimizer, first implement the adapter `[adapters.get_sharded_optimizer]` . Then, to execute the tests, run `uv run pytest tests/test_sharded_optimizer.py`. We recommend running the tests multiple times (e.g., 5) to ensure that they pass reliably.
+
+#response[
+  Success. See `OptShard` class in `./cs336_systems/distribute/opt_shard.py`. It's truely a hard work and such a complex logic. No wander why the problem deverves 15 points.
+
+  The `step()` method is quite intuitive. The really hard part is how to shard the params while keep a uniformed `Optimizer` for caller. You need to overload the `add_param_group()` method and the params will be automatically added in `super().__init__()` instead of manully slice the `params` argument in `OptShard.__init__()`. The reason why it behaves like this is that PyTorch hard coded the call of `add_param_group()` in `Optimizer.__init__()`.
+]
+
+== Optimizer State Sharding Accounting
+
+= Fully-Sharded Data Parallel
+
+== Fully-Sharded Data Parallel Implementation
+
+== FSDP Accounting
