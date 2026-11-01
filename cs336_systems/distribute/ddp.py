@@ -22,6 +22,11 @@ class BaseDDP(nn.Module, ABC):
         """Method to sync grad"""
 
 
+class NoneDDP(BaseDDP):
+    def finish_grad_sync(self) -> None:
+        return
+
+
 class NaiveDDP(BaseDDP):
     def finish_grad_sync(self) -> None:
         for p in self.module.parameters():
@@ -258,6 +263,7 @@ class ZeroCopyBucketedDDP(BaseDDP):
 
 
 DDP_REGISTRY: dict[str, type[BaseDDP]] = {
+    "none": NoneDDP,
     "naive": NaiveDDP,
     "flatonly": FlatOnlyDDP,
     "overlapped": OverlappedDDP,

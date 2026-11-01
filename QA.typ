@@ -1816,6 +1816,77 @@ Implement a Python class to handle optimizer state sharding. The class should wr
 
 == Optimizer State Sharding Accounting
 
++ Create a script to profile the peak memory usage when training language models with and without optimizer state sharding. Using the standard configuration (1 node, 2 GPUs, `xl` model size), report the peak memory usage after model initialization, directly before the optimizer step, and directly after the optimizer step. Do the results align with your expectations? Break down the memory usage in each setting (e.g., how much memory for parameters, how much for optimizer states, etc.).
+
+  *Deliverable*: 2-3 sentence response with peak memory usage results and a breakdown of how the memory is divided between different model and optimizer components.
+
+  #response[
+    With optimizer state sharding, peak memory decreases from 19,532.2 MB to 13,034.2 MB before the forward pass, and from 26,030.2 MB to 19,532.2 MB directly before and after the optimizer step, saving approximately 6,498 MB per GPU. The results strictly match expectations: AdamW optimizer states (fp32 first and second moments totaling 8 bytes per parameter) are halved across the 2 GPUs, saving 6.5 GB of state memory, while the 6.5 GB increase from pre-forward to pre-optimizer corresponds to activations and gradients accumulated during backward propagation. Memory remains identical directly after the optimizer step because optimizer state buffers are pre-allocated and updated in place.
+
+    #figure(
+      caption: [Peak memory consumption and step latency comparison with and without Optimizer State Sharding on the `xl` model across 2 GPUs (A100). Timed over 10 iterations after 5 warm-up steps.],
+    )[
+      #set text(8.5pt)
+      #table(
+        columns: (auto, auto, auto, auto, auto, auto, auto, auto),
+        inset: (x: 4.5pt, y: 3.5pt),
+        align: center + horizon,
+        stroke: none,
+
+        // Top border
+        table.hline(stroke: 1.2pt),
+
+        // Multi-level Header
+        table.header(
+          table.cell(rowspan: 2, align: center + horizon)[*Configuration*],
+          table.cell(rowspan: 2, align: center + horizon)[*Rank*],
+          table.cell(colspan: 3, align: center + bottom, inset: (bottom: 2pt))[*Peak Memory (MB)*],
+          table.cell(colspan: 3, align: center + bottom, inset: (bottom: 2pt))[*Latency & Communication*],
+
+          // Sub-dividers under multi-columns
+          table.hline(start: 2, end: 5, stroke: 0.4pt),
+          table.hline(start: 5, end: 8, stroke: 0.4pt),
+
+          [*Init / Pre-Fwd*], [*Pre-Opt*], [*Post-Opt*],
+          [*Step Time (ms)*], [*Comm (ms)*], [*Comm Ratio*],
+        ),
+        table.hline(stroke: 0.8pt),
+
+        // --- Without Sharding ---
+        table.cell(rowspan: 3)[*No Sharding*],
+        [Rank 0], [19,532.2], [26,030.2], [26,030.2], [362.64], [0.00], [0.00%],
+        [Rank 1], [19,532.2], [26,030.2], [26,030.2], [526.27], [0.00], [0.00%],
+        [*Avg*], [*19,532.2*], [*26,030.2*], [*26,030.2*], [*444.46*], [*0.00*], [*0.00%*],
+        table.hline(stroke: 0.4pt),
+
+        // --- With Sharding ---
+        table.cell(rowspan: 3)[*Opt Sharded*],
+        [Rank 0], [13,131.9], [19,629.9], [19,629.9], [524.14], [203.35], [38.80%],
+        [Rank 1], [12,936.6], [19,434.6], [19,434.6], [523.40], [61.37], [11.73%],
+        [*Avg*], [*13,034.2*], [*19,532.2*], [*19,532.2*], [*523.77*], [*132.36*], [*25.26%*],
+
+        // Bottom border
+        table.hline(stroke: 1.2pt),
+      )
+    ] <table-optimizer-sharding-comparison>
+  ]
+
++ How does our implementation of optimizer state sharding affect training speed? Measure the time taken per iteration with and without optimizer state sharding for the standard configuration (1 node, 2 GPUs, `xl` model size).
+
+  *Deliverable*: 2-3 sentence response with your timings.
+
+  #response[
+    Sharding optimizer states increases the average per-iteration time from 444.46 ms to 523.77 ms, constrained by the slower rank's synchronization overhead (524 ms vs 526 ms baseline max). This degradation stems from the unoverlapped synchronization in `optimizer.step()`, which incurs an average exposed communication time of 132.36 ms per step (accounting for 25.26% of step latency). Thus, our optimizer sharding trades training throughput for a roughly 25% reduction in total peak GPU memory.
+  ]
+
++ How does our approach to optimizer state sharding differ from ZeRO stage 1 (described as ZeRO-DP $P_"os"$ in #link("https://arxiv.org/abs/1910.02054")[S. Rajbhandari, J. Rasley, O. Ruwase, and Y. He])?
+
+  *Deliverable*: 2-3 sentence summary of any differences, especially those related to memory and communication volume.
+
+  #response[
+    While ZeRO-1 evenly splits optimizer states using continuous flat buffers, our approach shards parameters coarse-grainedly via round-robin assignment, leading to uneven memory distribution across ranks (a 195 MB imbalance between Rank 0 and Rank 1). Crucially, ZeRO-1 maintains baseline DP communication volume by combining gradient Reduce-Scatter with parameter All-Gather, whereas our decoupled implementation iteratively executes per-parameter `dist.broadcast` calls, introducing severe communication serialized overhead and topology inefficiency.
+  ]
+
 = Fully-Sharded Data Parallel
 
 == Fully-Sharded Data Parallel Implementation
