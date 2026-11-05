@@ -12,7 +12,7 @@ from cs336_basics.train_loop import AdamW
 from pydantic import BaseModel, Field
 from torch.profiler import ProfilerActivity, profile, record_function
 
-from cs336_systems.distribute import BaseDDP, OptShard, get_ddp_cls
+from cs336_systems.distribute import FSDP, BaseDDP, OptShard, get_ddp_cls
 from cs336_systems.distribute.utils import DCConfig, generate_data, memory_profile_json, setup, summarize_metrics, sync, time_profile_json
 from cs336_systems.utils import ModelArgs, ModelConfig
 
@@ -41,11 +41,17 @@ def run_benchmark(rank: int, dc_cfg: DCConfig, model_cfg: ModelConfig, exp_dir: 
         curr_device,
         model_cfg.dtype,
     )
-    model = ddp_cls(raw_model)
-    if dc_cfg.opt_shard:
-        optimizer = OptShard(raw_model.parameters(), AdamW, lr=1e-4, weight_decay=0.1)
+
+    # ddp wrap
+    if dc_cfg.fsdp:
+        model = FSDP(raw_model, compute_dtype=model_cfg.dtype)
     else:
-        optimizer = AdamW(raw_model.parameters(), lr=1e-4, weight_decay=0.1)
+        model = ddp_cls(raw_model)
+
+    if dc_cfg.opt_shard:
+        optimizer = OptShard(model.parameters(), AdamW, lr=1e-4, weight_decay=0.1)
+    else:
+        optimizer = AdamW(model.parameters(), lr=1e-4, weight_decay=0.1)
 
     # data
     x, targets = generate_data(model_cfg, dc_cfg, curr_device)

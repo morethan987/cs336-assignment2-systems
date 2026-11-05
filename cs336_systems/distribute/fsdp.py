@@ -18,6 +18,10 @@ class FSDPLinearFunction(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx: Any, x: torch.Tensor, _weight_shard: torch.Tensor, fsdp_layer: FSDPLayer) -> torch.Tensor:
+        # launch prefetching
+        fsdp_layer.prefetch_next(forward=True)
+
+        # wait for current
         full_weight = fsdp_layer.wait_all_gather()
         ctx.fsdp_layer = fsdp_layer
         ctx.save_for_backward(x)
@@ -33,6 +37,11 @@ class FSDPLinearFunction(torch.autograd.Function):
         grad_output = grad_outputs[0]
         (x,) = ctx.saved_tensors
         fsdp_layer: FSDPLayer = ctx.fsdp_layer
+
+        # backward prefetch
+        fsdp_layer.prefetch_next(forward=False)
+
+        # wait for current
         full_weight = fsdp_layer.wait_all_gather()
 
         x_flat = x.reshape(-1, x.shape[-1]).to(torch.float32)
@@ -44,6 +53,7 @@ class FSDPLinearFunction(torch.autograd.Function):
             grad_bias = grad_output_flat.sum(dim=0)
             fsdp_layer.fsdp_container._sync_replicated_grad(fsdp_layer.bias, grad_bias)
 
+        # async reduce-scatter and release gradient and weight
         fsdp_layer.post_backward(grad_full_weight)
         return grad_x, None, None
 
@@ -53,6 +63,7 @@ class FSDPEmbeddingFunction(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx: Any, x: torch.Tensor, _weight_shard: torch.Tensor, fsdp_layer: FSDPLayer) -> torch.Tensor:
+        fsdp_layer.prefetch_next(forward=True)
         full_weight = fsdp_layer.wait_all_gather()
         ctx.fsdp_layer = fsdp_layer
         ctx.save_for_backward(x)
@@ -63,6 +74,8 @@ class FSDPEmbeddingFunction(torch.autograd.Function):
         grad_output = grad_outputs[0]
         (x,) = ctx.saved_tensors
         fsdp_layer: FSDPLayer = ctx.fsdp_layer
+
+        fsdp_layer.prefetch_next(forward=False)
         full_weight = fsdp_layer.wait_all_gather()
 
         grad_full_weight = torch.zeros(
@@ -91,14 +104,13 @@ class FSDPLayer(nn.Module):
         fsdp_container: FSDP,
         compute_dtype: torch.dtype | None,
     ) -> None:
-        # Explicitly initialize nn.Module to avoid calling base_cls.__init__
         nn.Module.__init__(self)
         self.layer_idx = layer_idx
         object.__setattr__(self, "fsdp_container", fsdp_container)
         self.compute_dtype = compute_dtype
         self.world_size = fsdp_container.world_size
         self.rank = fsdp_container.rank
-        # depend on assignment 1
+
         self.is_linear = orig_module.__class__.__name__ == "Linear" or isinstance(orig_module, nn.Linear)
         self.is_embedding = orig_module.__class__.__name__ == "Embedding" or isinstance(orig_module, nn.Embedding)
         if not self.is_linear and not self.is_embedding:
@@ -129,35 +141,63 @@ class FSDPLayer(nn.Module):
             self.register_parameter("bias", None)
 
         self.full_weight: torch.Tensor | None = None
+        self._all_gather_buffer: torch.Tensor | None = None
+        self._gather_handle: dist.Work | None = None
 
     def start_all_gather(self) -> None:
-        if self.full_weight is not None:
+        """Async all-gather communication"""
+        if self.full_weight is not None or self._gather_handle is not None:
             return
 
         target_dtype = self.compute_dtype or self.weight.dtype
         local_shard = self.weight.detach().to(dtype=target_dtype).contiguous()
+
         if self.world_size == 1:
-            full_flat = local_shard
-        else:
-            full_flat = torch.empty(self.numel, dtype=target_dtype, device=self.weight.device)
-            dist.all_gather_into_tensor(full_flat, local_shard)
-        self.full_weight = full_flat.reshape(self.orig_shape)
+            self.full_weight = local_shard.reshape(self.orig_shape)
+            return
+
+        # allocate buffer
+        self._all_gather_buffer = torch.empty(self.numel, dtype=target_dtype, device=self.weight.device)
+        self._gather_handle = dist.all_gather_into_tensor(self._all_gather_buffer, local_shard, async_op=True)
 
     def wait_all_gather(self) -> torch.Tensor:
-        if self.full_weight is None:
+        if self.full_weight is not None:
+            return self.full_weight
+
+        # no full_weight and no handle -> communicate
+        if self._gather_handle is None:
             self.start_all_gather()
-        assert self.full_weight is not None
+
+        if self._gather_handle is not None:
+            self._gather_handle.wait()
+            self._gather_handle = None
+            assert self._all_gather_buffer is not None
+            self.full_weight = self._all_gather_buffer.reshape(self.orig_shape)
+            self._all_gather_buffer = None
+
+        assert self.full_weight is not None, "Failed to gather full weight"
         return self.full_weight
 
     def free_full_weight(self) -> None:
         self.full_weight = None
+        self._all_gather_buffer = None
+        self._gather_handle = None
+
+    def prefetch_next(self, forward: bool = True) -> None:
+        next_idx = self.layer_idx + 1 if forward else self.layer_idx - 1
+        layers = self.fsdp_container.sharded_layers
+        if 0 <= next_idx < len(layers):
+            layers[next_idx].start_all_gather()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # ty: ignore[invalid-mutable-override]
         if self.is_linear:
             out = cast(torch.Tensor, FSDPLinearFunction.apply(x, self.weight, self))
         else:
             out = cast(torch.Tensor, FSDPEmbeddingFunction.apply(x, self.weight, self))
-        self.free_full_weight()
+
+        # last layer should holds the weight for backward
+        if self.layer_idx != len(self.fsdp_container.sharded_layers) - 1:
+            self.free_full_weight()
         return out
 
     def post_backward(self, grad_full_weight: torch.Tensor) -> None:
@@ -212,8 +252,8 @@ class FSDP(nn.Module):
         super().__init__()
         self.module = module
         self.compute_dtype = compute_dtype
-        self.world_size = dist.get_world_size()
-        self.rank = dist.get_rank()
+        self.world_size = dist.get_world_size() if dist.is_initialized() else 1
+        self.rank = dist.get_rank() if dist.is_initialized() else 0
 
         self.sharded_layers: list[FSDPLayer] = []
         self.grad_sync_handles: list[tuple[dist.Work, torch.Tensor, nn.Parameter]] = []
@@ -268,6 +308,10 @@ class FSDP(nn.Module):
         return hook
 
     def forward(self, *inputs: Any, **kwargs: Any) -> Any:  # ty: ignore[invalid-mutable-override]
+        if self.sharded_layers:
+            self.sharded_layers[0].start_all_gather()
+            if len(self.sharded_layers) > 1:
+                self.sharded_layers[1].start_all_gather()
         return self.module(*inputs, **kwargs)
 
     def finish_grad_sync(self) -> None:

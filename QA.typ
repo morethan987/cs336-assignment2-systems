@@ -1909,10 +1909,60 @@ Implement a Python class for fully-sharded data parallel training. The class sho
 
   *Deliverable*: 2-3 sentence response with your findings.
 
-  #response[]
+  #response[
+    The peak memory mainly consists of model parameters, activations, gradients and optimizer states. Except for activations, the other three part can be devided into $N$ pieces and scatter to $N$ GPUs. If the basic parameters take $Phi$ memory, so the FSDP can save $(1-1/N)Phi$ memory.
+  ]
 
 + Profile the `xl` model on two GPUs and pay attention to the all-gather of weights. Does the communication finish in time for the forward pass?
 
   *Deliverable*: 2-3 sentence response with your timings. Include screenshots of Nsight to back up your claims.
 
-  #response[]
+  #response[
+    No, the all-gather communication of weights does *not* fully finish in time for the forward pass, causing forward compute streams to stall on weight readiness. Across the 2 GPUs, while prefetching successfully hides 58.27% of the communication on average, an exposed communication latency of 81.03 ms per step (up to 96.12 ms on Rank 0) remains unoverlapped out of the 192.51 ms total per-step communication time.
+
+    #figure(
+      caption: [Profiling communication overlap and exposed latency of the `xl` model across 2 GPUs (FSDP vs. Optimizer Sharding Baseline). Measured over 10 steps after 5 warm-up steps.],
+    )[
+      #set text(8.5pt)
+      #table(
+        columns: (auto, auto, auto, auto, auto, auto, auto),
+        inset: (x: 5pt, y: 3.5pt),
+        align: center + horizon,
+        stroke: none,
+
+        // Top border
+        table.hline(stroke: 1.2pt),
+
+        // Multi-level Header
+        table.header(
+          table.cell(rowspan: 2, align: center + horizon)[*Configuration*],
+          table.cell(rowspan: 2, align: center + horizon)[*Rank*],
+          table.cell(colspan: 3, align: center + bottom, inset: (bottom: 2pt))[*Communication Latency (ms/step)*],
+          table.cell(rowspan: 2, align: center + horizon)[*Overlap Ratio*],
+          table.cell(rowspan: 2, align: center + horizon)[*Total Step Time (ms)*],
+
+          // Sub-divider under communication metrics
+          table.hline(start: 2, end: 5, stroke: 0.4pt),
+
+          [*Actual Comm*], [*Exposed Comm*], [*Comm Ratio*],
+        ),
+        table.hline(stroke: 0.8pt),
+
+        // --- Opt Sharded Only (Baseline) ---
+        table.cell(rowspan: 3)[*Opt Sharded* \ #(text(7pt, fill: luma(100))[No Overlap Baseline])],
+        [Rank 0], [203.35], [203.35], [38.80%], [0.00%], [524.14],
+        [Rank 1], [61.37], [61.37], [11.73%], [0.00%], [523.40],
+        [*Avg*], [*132.36*], [*132.36*], [*25.26%*], [*0.00%*], [*523.77*],
+        table.hline(stroke: 0.4pt),
+
+        // --- FSDP (Weight All-Gather) ---
+        table.cell(rowspan: 3)[*FSDP* \ #(text(7pt, fill: luma(100))[Prefetching & Overlap])],
+        [Rank 0], [208.15], [96.12], [25.40%], [53.82%], [819.60],
+        [Rank 1], [176.88], [65.94], [21.66%], [62.72%], [816.69],
+        [*Avg*], [*192.51*], [*81.03*], [*23.53%*], [*58.27%*], [*818.15*],
+
+        // Bottom border
+        table.hline(stroke: 1.2pt),
+      )
+    ] <table-fsdp-overlap-profile>
+  ]

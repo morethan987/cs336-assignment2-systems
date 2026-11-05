@@ -32,6 +32,7 @@ class DCConfig(BaseModel):
     batch_size: int = Field(default=4, description="Batch size")
     ddp_type: str = Field(default="none", description=f"Choices: {list(DDP_REGISTRY.keys())}")
     opt_shard: bool = Field(default=False, description="Use optimizer sharding")
+    fsdp: bool = Field(default=False, description="Use fully-sharded data parallel")
     record_memory: bool = Field(default=False, description="Record memory with torch.profile and analyze it")
     master_addr: str = Field(default="localhost", description="Master IP address")
     master_port: str = Field(default="29500", description="Master port")
@@ -43,6 +44,10 @@ class DCConfig(BaseModel):
             raise ValueError("NCCL backend does not support CPU tensors.")
         if self.ddp_type not in DDP_REGISTRY:
             raise ValueError(f"Invalid ddp_type: {self.ddp_type}. Available: {list(DDP_REGISTRY.keys())}")
+        if self.ddp_type != "none" and self.fsdp:
+            raise ValueError(f"fsdp ({self.fsdp}) and ddp_type ({self.ddp_type}) can not be set at the same time!")
+        if self.opt_shard and self.fsdp:
+            raise ValueError(f"fsdp ({self.fsdp}) and opt_shard ({self.opt_shard}) can not be set at the same time!")
         return self
 
 
