@@ -1966,3 +1966,181 @@ Implement a Python class for fully-sharded data parallel training. The class sho
       )
     ] <table-fsdp-overlap-profile>
   ]
+
+= Analyzing Parallelism Strategies
+
+== Alternate ring all-reduce
+
+Instead of implementing all-reduce as a ring reduce-scatter followed by a ring all-gather, let's use the following algorithm:
+
+For step $t = 1, dots, N - 1$, device $i$ does the following:
+
+- If $t = 1$, initialize $y <- x^((i))$, which stores the partial sum so far
+- Send $x^(((i-t+1) mod N))$ to device $(i + 1) mod N$
+- Receive $x^(((i-t) mod N))$ from device $(i - 1) mod N$
+- Update your copy of the partial sum: $y <- y + x^(((i-t) mod N))$
+
+In the same setting as above ($W$ egress bandwidth per device, each $x^((i))$ is of size $S$), how long does this algorithm take?
+
+*Deliverable:* An answer in terms of $S$, $N$, and $W$, along with a one-sentence justification.
+
+#response[
+  Every time each device sends their received (the local data if $t=1$) data with size $S$ to the next one that takes $S/W$. So the total time cost is $(N-1) S/W$.
+]
+
+== Data parallel calculations <section:data_parallel_calculations>
+
+We now have everything we need to calculate when data parallelism becomes communication bottlenecked. Let $C$ (in $"FLOP"\/s$) denote the device accelerator speed, and $W$ (in bytes per second) denote each device's egress bandwidth. We can then compute the computation time and communication time. Because computation and communication can be overlapped, we are bottlenecked when communication time becomes larger than computation time. We'll assume that all weights and activations are in `FP16` (i.e. two bytes).
+
++ How many FLOPs are required to compute the backward pass, with $N_"DP"$ data parallelism? You can ignore all non-matmul operations. Recall that a matmul ($A$, $B$)($B$, $C$) -> ($A$, $C$) takes $2 A B C$ flops.
+
+  *Deliverable*: An answer in terms of $B$, $D$, $D_"FF"$, and $N_"DP"$, along with a one-sentence justification.
+
+  #response[
+    Total FLOPs is $12 B D D_"FF"$. $dif z$ contains $2 B D D_"FF"$, $dif x$ contains $4 B D D_"FF"$, $dif W_3$, $dif W_2$, $dif W_1$ each contains $2 B D D_"FF"$. For each device the FLOPs is $12 B/N_"DP" D D_"FF"$.
+  ]
+
++ How much communication time is required in the backward pass, with $N_"DP"$ data parallelism?
+
+  *Deliverable*: An answer in terms of a subset of $B$, $D$, $D_"FF"$ , $C$, and $W$, along with a one-sentence justification.
+
+  #response[
+    Total communication time is $12 (N_"DP" - 1) / N_"DP" (D D_"FF")/W$. The gradients of all parameters should be exchanged ($6 D D_"FF"$ bytes) and all-reduce operation need $2 (N - 1)/N S/W$.
+  ]
+
++ Fixing the other parameters, how large can $N_"DP"$ become before we're communication bottlenecked?
+
+  *Deliverable*: An inequality with $N_"DP"$ on one side, and an expression in terms of a subset of $B$, $D$, $D_"FF"$ , $C$, and $W$ on the other, along with a one-sentence justification.
+
+  #response[
+    $N_"DP" <= 1 + (B W)/C$, obtained by setting the communication time $12 (N_"DP" - 1)/N_"DP" (D D_"FF")/W$ to be at most the computation time $12 B (D D_"FF") / (N_"DP" C)$.
+  ]
+
+== Fully sharded data parallel calculations
+
+Under the same setting as the data parallel calculations, let's calculate when FSDP becomes communication bottlenecked.
+
++ How many FLOPs are required to compute the backward pass, with $N_"FSDP"$ FSDP? What about the forward pass?
+
+  *Deliverable*: Two answers in terms of $B$, $D$, $D_"FF"$, and $N_"FSDP"$, along with two one-sentence justifications.
+
+  #response[
+    $6 B D D_"FF"$ for forward pass in total and for each device is $6 B/N_"FSDP" D D_"FF"$. For backward pass, FLOPs remains the same as $12 B/N_"FSDP" D D_"FF"$.
+  ]
+
++ How much communication time is required in the backward pass, with $N_"FSDP"$ FSDP? What about the forward pass?
+
+  *Deliverable*: Two answers in terms of $B$, $D$, $D_"FF"$, $N_"FSDP"$ and $W$, along with two one-sentence justifications.
+
+  #response[
+    For forward pass, we need to conduct all-gather operation for three times to collect the weights of $W_1$, $W_2$ and $W_3$ which costs $6 (N_"FSDP" - 1)/N_"FSDP" (D D_"FF")/W$ seconds. For backward pass, we also need three times all-gather to recover the weights. Then three times reduce-scatter is required to get the gradients for each weight piece that costs also $6 (N_"FSDP" - 1)/N_"FSDP" (D D_"FF")/W$ seconds. Time cost for backward is $12 (N_"FSDP" - 1)/N_"FSDP" (D D_"FF")/W$.
+  ]
+
++ Fixing the other parameters, how large can $N_"FSDP"$ become before the backward pass is communication bottlenecked? What about the forward pass?
+
+  *Deliverable*: Two inequalities with $N_"FSDP"$ on one side, and an expression in terms of a subset of $B$, $D$, $D_"FF"$ , $C$, and $W$ on the other, along with two one-sentence justifications.
+
+  #response[
+    The communation time should less or equal than the computation time that can propose the inequality: $N_"DP" <= 1 + (B W)/C$. Both the forward and backward pass follow the same upper boundary.
+  ]
+
+== Tensor parallel calculations
+
+Under the same setting as the DP and FSDP calculations, let's calculate when TP becomes communication bottlenecked.
+
++ Given input $dif y$ of size $(B, D)$ write out the backward pass of the tensor parallel strategy described above (where $W_1^((i))$ and $W_2^((i))$ have shape $(D, D_"FF" / N_"TP")$, and $W_3^((i))$ has shape $(D_"FF" / N_"TP", D)$).
+
+  *Deliverable:* A series of equations describing the backward pass, in terms of $dif y$, sharded weights $(W_1^((i)), W_2^((i)), W_3^((i)))$, activations saved from the forward pass $(x, x_1^((i)), x_2^((i)), z^((i)), y^((i)))$, communication primitives, and any intermediate variables you'dif like to define. The equations should produce each device's gradients $dif W_1^((i))$, $dif W_2^((i))$, $dif W_3^((i))$, and the backward pass output $dif x$. Feel free to reference the non-sharded backward pass in @section:data_parallel_calculations and modify it.
+
+  #response[
+    $ dif z^((i)) = dif y W_3^((i)T) $
+    $ dif x_2^((i)) = dif z^((i)) * f(x_1^((i))) $
+    $ dif x_1^((i)) = dif z^((i)) * f'(x_1^((i))) * x_2^((i)) $
+    $ dif x^((i)) = dif x_1^((i)) W_1^((i)T) + dif x_2^((i)) W_2^((i)T) $
+    $ dif W_3^((i)) = z^((i)T) dif y $
+    $ dif W_2^((i)) = x^T dif x_2^((i)) $
+    $ dif W_1^((i)) = x^T dif x_1^((i)) $
+    $ dif x = "all-reduce" ( { dif x^((i)) }_(i=0)^(N_"TP"-1) ) $
+  ]
+
++ How many FLOPs are required to compute the forward pass, with $N_"TP"$ TP? What about the backward pass?
+
+  *Deliverable:* Two answers in terms of $B$, $D$, $D_"FF"$, and $N_"TP"$, along with two one-sentence justifications.
+
+  #response[
+    In forward pass, we need $(6 B D D_"FF") / N_"TP"$ FLOPs per device. Each device executes three matrix multiplications ($x W_1^((i))$, $x W_2^((i))$, and $z^((i)) W_3^((i))$) of dimensions $(B, D, D_"FF" / N_"TP")$, while element-wise and reduction FLOPs are negligible. In backward pass, $(12 B D D_"FF") / N_"TP"$ FLOPs is required per device. Each device executes six matrix multiplications of dimensions $(B, D, D_"FF" / N_"TP")$ (computing $dif z^((i))$, two terms for $dif x^((i))$, and gradients $dif W_1^((i)), dif W_2^((i)), dif W_3^((i))$), with element-wise FLOPs also being negligible.
+  ]
+
++ How much communication time is required in the forward pass, with $N_"TP"$ TP? What about the backward pass?
+
+  *Deliverable:* Two answers in terms of a subset of $B$, $D$, $D_"FF"$, $N_"TP"$, and $W$, along with two one-sentence justifications.
+
+  #response[
+    Both forward and backwark pass need one all-reduce that costs $(4 B D (N_"TP" - 1)) / (W N_"TP")$ seconds.
+  ]
+
++ Fixing the other parameters, how large can $N_"TP"$ become before the backward pass is communication bottlenecked? What about the forward pass?
+
+  *Deliverable:* Two inequalities with $N_"TP"$ on one side, and an expression in terms of a subset of $B$, $D$, $D_"FF"$, $C$, and $W$ on the other, along with two one-sentence justifications.
+
+  #response[
+    The same method with the previous problem to construct the inequality. For forward pass $N_"TP" <= 1 + (3 D_"FF" W) / (2 C)$ and for backward pass $N_"TP" <= 1 + (3 D_"FF" W) / C$.
+  ]
+
+== 2D parallelism calculations
+
+Under the same setting as the calculations so far, let's calculate when 2D parallelism becomes bottlenecked.
+
++ How many FLOPs are required to compute the forward pass, with $N_"FSDP"$ FSDP + $N_"TP"$ TP?
+
+  *Deliverable:* An answer in terms of $B$, $D$, $D_"FF"$, $N_"FSDP"$, and $N_"TP"$, along with a one-sentence justification.
+
+  #response[
+    The FLOPs for each device is $6 (B D D_"FF")/(N_"FSDP" N_"TP")$.
+  ]
+
++ How much communication time is required in the forward pass, with $N_"FSDP"$ FSDP + $N_"TP"$ TP? Assume that the communication along each axis can be overlapped (in other words, the collectives along the FSDP axis can be overlapped with the collectives along the TP axis).
+
+  *Deliverable:* An answer in terms of a subset of $B$, $D$, $D_"FF"$, $N_"FSDP"$, $N_"TP"$, and $W$, along with a one-sentence justification. Hint: The answer should be expressed as a max between two quantities (the FSDP and TP collective costs), since the two can be overlapped.
+
+  #response[
+    The communication time for the weights is $6 (N_"FSDP" - 1)/(N_"FSDP" N_"TP") (D D_"FF")/W$ and that for $y^((j))$ is $4 (N_"TP"-1)/(N_"FSDP" N_"DP") (B D)/W$. The final communication cost is
+
+    $ max(6 (N_"FSDP" - 1)/(N_"FSDP" N_"TP") (D D_"FF")/W, 4 (N_"TP"-1)/(N_"FSDP" N_"DP") (B D)/W). $ <eq:overlap_fsdp_tp_cmm_time>
+  ]
+
++ Under the optimal setting of $N_"TP"$ and $N_"FSDP"$, how large can $N = N_"TP" N_"FSDP"$ become before the forward pass is communication bottlenecked?
+
+  *Deliverable:* An inequality with $N$ on one side, and an expression in terms of a subset of $B$, $D$, $D_"FF"$, $C$, and $W$ on the other, along with a few sentences and equations as justification.
+
+  #response[
+    The computation time should be greater or equal than the both term in @eq:overlap_fsdp_tp_cmm_time. The first term induces that $N_"FSDP" <= 1+ (B W)/C$ and the second term induces that $N_"TP" <= 1 + (3 W D_"FF")/(2 C)$. So the maximum $N$ should be
+
+    $ N = N_"FSDP" N_"TP" <= (1+ (B W)/C) (1 + (3 W D_"FF")/(2 C)). $
+  ]
+
++ Now suppose the FSDP-axis and TP-axis collectives cannot be overlapped because they share the same network resources. Under the optimal setting of $N_"TP"$ and $N_"FSDP"$, how large can $N = N_"TP" N_"FSDP"$ become before the forward pass is communication bottlenecked? Don't worry about truncating $N_"TP"$ and $N_"FSDP"$ to be integers.
+
+  *Deliverable:* An inequality with $N$ on one side, and an expression in terms of a subset of $B$, $D$, $D_"FF"$, $C$, and $W$ on the other, along with a few sentences and equations as justification.
+
+  #response[
+    Under the setting of this problem, the communication time is
+
+    $ 6 (N_"FSDP" - 1)/(N_"FSDP" N_"TP") (D D_"FF")/W + 4 (N_"TP"-1)/(N_"FSDP" N_"TP") (B D)/W. $
+
+    The communication time should less or equal than the computation time that gives the inequaltion below as
+
+    $ 6 (N_"FSDP" - 1)/(N_"FSDP" N_"TP") (D D_"FF")/W + 4 (N_"TP"-1)/(N_"FSDP" N_"TP") (B D)/W <= (6 B D D_"FF")/(C N_"FSDP" N_"TP"). $
+
+    Rearrange the term we can get
+
+    $ 3 D_"FF" N_"FSDP" + 2 B N_"TP" <= (3 B D_"FF" W)/C + 2 B + 3 D_"FF". $
+
+    According to AM–GM inequality, we can get
+
+    $ 2 sqrt(6 B D_"FF" N_"FSDP" N_"TP") <= 3 D_"FF" N_"FSDP" + 2 B N_"TP" <= (3 B D_"FF" W)/C + 2 B + 3 D_"FF". $
+
+    Finally, we can get
+
+    $ N = N_"FSDP" N_"TP" <= ((3 B D_"FF" W \/C + 2 B + 3 D_"FF")^2)/(24 B D_"FF"). $
+  ]
